@@ -1,7 +1,7 @@
 import { NativeTabs } from 'expo-router/unstable-native-tabs';
 import { useColorScheme } from 'react-native';
 
-import { Colors } from '@/constants/theme';
+import { AccentColors, Colors } from '@/constants/theme';
 
 export default function AppTabs() {
   const scheme = useColorScheme();
@@ -13,35 +13,48 @@ export default function AppTabs() {
       indicatorColor={colors.backgroundElement}
       labelStyle={{ selected: { color: colors.text } }}>
       <NativeTabs.Trigger name="index">
-        <NativeTabs.Trigger.Label>Final Form</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Label>Home</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon
-          src={require('@/assets/images/tabIcons/home.png')}
-          renderingMode="template"
+          sf={{ default: 'house', selected: 'house.fill' }}
+          md={{ default: 'home', selected: 'home' }}
+          selectedColor={AccentColors.green}
         />
       </NativeTabs.Trigger>
 
-      <NativeTabs.Trigger name="explore">
-        <NativeTabs.Trigger.Label>Final Form</NativeTabs.Trigger.Label>
+      <NativeTabs.Trigger name="plan">
+        <NativeTabs.Trigger.Label>Plan</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon
-          src={require('@/assets/images/tabIcons/explore.png')}
-          renderingMode="template"
+          sf={{ default: 'calendar', selected: 'calendar.circle.fill' }}
+          md={{ default: 'event', selected: 'event' }}
+          selectedColor={AccentColors.green}
         />
       </NativeTabs.Trigger>
 
-      <NativeTabs.Trigger name="forms">
-        <NativeTabs.Trigger.Label>Final Form</NativeTabs.Trigger.Label>
+      <NativeTabs.Trigger name="stack">
+        <NativeTabs.Trigger.Label>Stack</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon
+          sf={{ default: 'square.stack.3d.up', selected: 'square.stack.3d.up.fill' }}
+          md={{ default: 'layers', selected: 'layers' }}
+          selectedColor={AccentColors.green}
+        />
       </NativeTabs.Trigger>
 
-      <NativeTabs.Trigger name="responses">
-        <NativeTabs.Trigger.Label>Final Form</NativeTabs.Trigger.Label>
+      <NativeTabs.Trigger name="fuel">
+        <NativeTabs.Trigger.Label>Fuel</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon
+          sf={{ default: 'flame', selected: 'flame.fill' }}
+          md={{ default: 'local_fire_department', selected: 'local_fire_department' }}
+          selectedColor={AccentColors.green}
+        />
       </NativeTabs.Trigger>
 
-      <NativeTabs.Trigger name="templates">
-        <NativeTabs.Trigger.Label>Final Form</NativeTabs.Trigger.Label>
-      </NativeTabs.Trigger>
-
-      <NativeTabs.Trigger name="settings">
-        <NativeTabs.Trigger.Label>Settings</NativeTabs.Trigger.Label>
+      <NativeTabs.Trigger name="train">
+        <NativeTabs.Trigger.Label>Train</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon
+          sf={{ default: 'figure.run', selected: 'figure.run' }}
+          md={{ default: 'fitness_center', selected: 'fitness_center' }}
+          selectedColor={AccentColors.green}
+        />
       </NativeTabs.Trigger>
     </NativeTabs>
   );

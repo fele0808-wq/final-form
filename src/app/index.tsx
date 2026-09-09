@@ -1,17 +1,18 @@
 import { SymbolView } from 'expo-symbols';
 import { router } from 'expo-router';
-import { Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
+import { AccentColors, BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
+import { formatAppDate } from '@/constants/date-time';
 import { useTheme } from '@/hooks/use-theme';
 
 const recentForms = [
-  { title: 'Customer feedback', detail: '8 responses · Edited today', color: '#D7F4E8' },
-  { title: 'Event registration', detail: '24 responses · Edited yesterday', color: '#FBE3C5' },
-  { title: 'Team pulse check', detail: '12 responses · Edited May 18', color: '#DCE8FB' },
+  { title: 'Customer feedback', detail: '8 responses · Edited today', color: AccentColors.green },
+  { title: 'Event registration', detail: '24 responses · Edited yesterday', color: AccentColors.purple },
+  { title: 'Team pulse check', detail: '12 responses · Edited May 18', color: AccentColors.green },
 ];
 
 export default function HomeScreen() {
@@ -22,19 +23,22 @@ export default function HomeScreen() {
       <SafeAreaView style={styles.safeArea}>
         <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
           <View style={styles.header}>
-            <View>
+            <View style={styles.headerCopy}>
               <ThemedText type="small" themeColor="textSecondary" style={styles.eyebrow}>
-                TUESDAY, MAY 21
+                {formatAppDate().toUpperCase()}
               </ThemedText>
               <ThemedText type="subtitle" style={styles.heading}>
                 Good morning, Fele
               </ThemedText>
             </View>
-            <View style={[styles.avatar, { backgroundColor: theme.text }]}>
+            <Pressable
+              accessibilityLabel="Open profile"
+              accessibilityRole="button"
+              style={({ pressed }) => [styles.avatar, { backgroundColor: theme.text }, pressed && styles.pressed]}>
               <ThemedText style={styles.avatarText} themeColor="background">
                 F
               </ThemedText>
-            </View>
+            </Pressable>
           </View>
 
           <Pressable
@@ -77,7 +81,7 @@ export default function HomeScreen() {
             {recentForms.map((form) => (
               <Pressable key={form.title} style={({ pressed }) => [styles.formRow, pressed && styles.pressed]}>
                 <View style={[styles.formMark, { backgroundColor: form.color }]}>
-                  <SymbolView name="doc.text" tintColor="#1C2B25" size={20} />
+                  <SymbolView name="doc.text" tintColor={AccentColors.charcoalText} size={20} />
                 </View>
                 <View style={styles.formCopy}>
                   <ThemedText style={styles.formTitle}>{form.title}</ThemedText>
@@ -114,15 +118,20 @@ const styles = StyleSheet.create({
     maxWidth: MaxContentWidth,
   },
   content: {
-    paddingHorizontal: Spacing.four,
-    paddingTop: Spacing.three,
-    paddingBottom: Spacing.five,
-    gap: Spacing.four,
+    paddingHorizontal: Spacing.five,
+    paddingTop: Spacing.four,
+    paddingBottom: Spacing.six,
+    gap: Spacing.five,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
+  },
+  headerCopy: {
+    flex: 1,
+    minWidth: 0,
+    paddingRight: Spacing.three,
   },
   eyebrow: {
     fontSize: 11,
@@ -130,14 +139,16 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   heading: {
-    fontSize: 29,
-    lineHeight: 36,
-    marginTop: Spacing.one,
+    fontSize: 31,
+    lineHeight: 38,
+    marginTop: Spacing.two,
   },
   avatar: {
     width: 44,
     height: 44,
     borderRadius: 22,
+    flexShrink: 0,
+    marginRight: Spacing.two,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -146,36 +157,36 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   createCard: {
-    backgroundColor: '#B9EAD5',
-    borderRadius: 18,
-    padding: Spacing.four,
-    minHeight: 174,
+    backgroundColor: AccentColors.purple,
+    borderRadius: 24,
+    padding: Spacing.five,
+    minHeight: 196,
     justifyContent: 'space-between',
   },
   createCopy: {
     maxWidth: 280,
-    gap: Spacing.one,
+    gap: Spacing.two,
   },
   createLabel: {
-    color: '#426659',
+    color: AccentColors.charcoalText,
     fontSize: 11,
     fontWeight: '800',
     letterSpacing: 1,
   },
   createTitle: {
-    color: '#1C2B25',
-    fontSize: 25,
-    lineHeight: 30,
-    fontWeight: '700',
+    color: AccentColors.charcoalText,
+    fontSize: 27,
+    lineHeight: 33,
+    fontWeight: '800',
   },
   createHint: {
-    color: '#426659',
+    color: AccentColors.charcoalText,
   },
   addButton: {
-    backgroundColor: '#EAF9F1',
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    backgroundColor: AccentColors.green,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     alignItems: 'center',
     justifyContent: 'center',
     alignSelf: 'flex-end',
@@ -190,18 +201,18 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   viewAll: {
-    color: '#40836B',
+    color: AccentColors.green,
     fontWeight: '700',
   },
   statsRow: {
     flexDirection: 'row',
-    gap: Spacing.two,
+    gap: Spacing.three,
   },
   stat: {
     flex: 1,
-    minHeight: 88,
-    borderRadius: 14,
-    padding: Spacing.three,
+    minHeight: 104,
+    borderRadius: 18,
+    padding: Spacing.four,
     justifyContent: 'space-between',
   },
   statValue: {
@@ -209,18 +220,21 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   formsList: {
-    gap: Spacing.two,
+    gap: Spacing.three,
   },
   formRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.three,
-    paddingVertical: Spacing.two,
+    paddingVertical: Spacing.three,
+    paddingHorizontal: Spacing.three,
+    borderRadius: 16,
+    backgroundColor: '#25272C',
   },
   formMark: {
-    width: 48,
-    height: 48,
-    borderRadius: 14,
+    width: 52,
+    height: 52,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
   },

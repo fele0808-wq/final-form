@@ -1,4 +1,5 @@
 import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router';
+import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
 import { useColorScheme } from 'react-native';
 
@@ -9,6 +10,16 @@ SplashScreen.preventAutoHideAsync();
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
+  const [fontsLoaded] = useFonts({
+    Manrope: require('@/assets/fonts/Manrope-Regular.ttf'),
+    ManropeMedium: require('@/assets/fonts/Manrope-Medium.ttf'),
+    ManropeSemiBold: require('@/assets/fonts/Manrope-SemiBold.ttf'),
+    ManropeBold: require('@/assets/fonts/Manrope-Bold.ttf'),
+    ManropeExtraBold: require('@/assets/fonts/Manrope-ExtraBold.ttf'),
+  });
+
+  if (!fontsLoaded) return null;
+
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <AnimatedSplashOverlay />

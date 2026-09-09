@@ -7,47 +7,61 @@ import '@/global.css';
 
 import { Platform } from 'react-native';
 
+export const AccentColors = {
+  purple: '#D14DFF',
+  green: '#B8FF3D',
+  charcoalText: '#202124',
+} as const;
+
 export const Colors = {
   light: {
-    text: '#000000',
-    background: '#ffffff',
-    backgroundElement: '#F0F0F3',
-    backgroundSelected: '#E0E1E6',
-    textSecondary: '#60646C',
+    text: AccentColors.purple,
+    background: '#17181B',
+    backgroundElement: '#25272C',
+    backgroundSelected: '#B8FF3D',
+    textSecondary: '#A7A9B2',
   },
   dark: {
-    text: '#ffffff',
-    background: '#000000',
-    backgroundElement: '#212225',
-    backgroundSelected: '#2E3135',
-    textSecondary: '#B0B4BA',
+    text: AccentColors.purple,
+    background: '#17181B',
+    backgroundElement: '#25272C',
+    backgroundSelected: '#B8FF3D',
+    textSecondary: '#A7A9B2',
   },
 } as const;
 
 export type ThemeColor = keyof typeof Colors.light & keyof typeof Colors.dark;
 
+export const FontFaces = {
+  regular: 'Manrope',
+  medium: 'ManropeMedium',
+  semibold: 'ManropeSemiBold',
+  bold: 'ManropeBold',
+  extrabold: 'ManropeExtraBold',
+} as const;
+
 export const Fonts = Platform.select({
   ios: {
     /** iOS `UIFontDescriptorSystemDesignDefault` */
-    sans: 'system-ui',
+    sans: 'Manrope',
     /** iOS `UIFontDescriptorSystemDesignSerif` */
-    serif: 'ui-serif',
+    serif: 'Manrope',
     /** iOS `UIFontDescriptorSystemDesignRounded` */
-    rounded: 'ui-rounded',
+    rounded: 'Manrope',
     /** iOS `UIFontDescriptorSystemDesignMonospaced` */
-    mono: 'ui-monospace',
+    mono: 'Manrope',
   },
   default: {
-    sans: 'normal',
-    serif: 'serif',
-    rounded: 'normal',
-    mono: 'monospace',
+    sans: 'Manrope',
+    serif: 'Manrope',
+    rounded: 'Manrope',
+    mono: 'Manrope',
   },
   web: {
     sans: 'var(--font-display)',
-    serif: 'var(--font-serif)',
-    rounded: 'var(--font-rounded)',
-    mono: 'var(--font-mono)',
+    serif: 'var(--font-display)',
+    rounded: 'var(--font-display)',
+    mono: 'var(--font-display)',
   },
 });
 

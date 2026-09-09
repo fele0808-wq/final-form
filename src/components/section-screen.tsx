@@ -3,7 +3,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
+import { AccentColors, BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
 
 type SectionScreenProps = {
   name: string;
@@ -50,24 +50,24 @@ const styles = StyleSheet.create({
     paddingBottom: BottomTabInset + Spacing.three,
   },
   content: {
-    padding: Spacing.four,
+    padding: Spacing.five,
     paddingTop: Spacing.six,
-    gap: Spacing.three,
+    gap: Spacing.four,
   },
   eyebrow: {
-    color: '#40836B',
+    color: AccentColors.green,
     fontSize: 11,
     fontWeight: '800',
     letterSpacing: 2,
   },
   brand: {
-    fontSize: 42,
-    lineHeight: 46,
-    fontWeight: '700',
+    fontSize: 44,
+    lineHeight: 50,
+    fontWeight: '800',
   },
   rule: {
     height: 1,
-    backgroundColor: '#B9EAD5',
+    backgroundColor: AccentColors.purple,
     marginVertical: Spacing.two,
   },
   sectionName: {
@@ -79,10 +79,10 @@ const styles = StyleSheet.create({
     maxWidth: 380,
   },
   emptyState: {
-    marginTop: Spacing.four,
-    borderRadius: 16,
-    padding: Spacing.four,
-    minHeight: 160,
+    marginTop: Spacing.five,
+    borderRadius: 22,
+    padding: Spacing.five,
+    minHeight: 190,
     justifyContent: 'flex-end',
     gap: Spacing.one,
   },
