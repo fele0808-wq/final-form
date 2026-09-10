@@ -10,7 +10,7 @@ import { ThemedView } from '@/components/themed-view';
 import { SwipeSheet } from '@/components/swipe-sheet';
 import { AccentColors, BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
 import { getAppDateParts, APP_TIME_ZONE, formatAppDate } from '@/constants/date-time';
-import { DAY_END, DAY_START, buildPlanFromPrompt, findScheduleConflict, formatPlannerDuration, formatPlannerTime, getFreeBlocks, type Activity, type PlannedItem, type PlanningAnchor, type ScheduleConflict } from '@/lib/planner';
+import { DAY_END, DAY_START, buildPlanFromPrompt, findPlanOverlaps, findScheduleConflict, formatPlannerDuration, formatPlannerTime, getFreeBlocks, type Activity, type PlanOverlap, type PlannedItem, type PlanningAnchor, type ScheduleConflict } from '@/lib/planner';
 import { applyPlanningPreferences, loadPlanningPreferences, rememberMovedPlan, rememberPlan, type PlanningPreferences } from '@/lib/planning-memory';
 
 const schedule: Array<{
@@ -51,6 +51,11 @@ type ChatMessage = {
   text: string;
 };
 
+type DuplicateConfirmation = {
+  prompt: string;
+  duplicateItems: PlannedItem[];
+};
+
 type AmbiguousTime = {
   token: string;
   start: number;
@@ -66,6 +71,104 @@ function findNextAmbiguousTime(prompt: string): AmbiguousTime | null {
   if (hour > 12) return null;
   const start = (match.index ?? 0) + match[0].lastIndexOf(token);
   return { token, start, end: start + token.length };
+}
+
+function getCancellationActivity(prompt: string) {
+  const normalizedPrompt = prompt.toLowerCase().replace(/[’]/g, '\'');
+  const hasRemovalIntent = /\b(?:can(?:not|\s*'?\s*t)|can not|won\s*'?\s*t|will not|cancel|remove|delete|clear|erase|wipe|skip|not going|no longer|do\s*not\s*want|don\s*'?\s*t want)\b/.test(normalizedPrompt);
+  const clearsCalendarCommitments = /\b(?:clear|remove|delete|erase|wipe)\b.*\b(?:calendar\s+)?commitments?\b/.test(normalizedPrompt);
+  if (!hasRemovalIntent && !clearsCalendarCommitments) return null;
+  if (/gym|workout|training|exercise/.test(normalizedPrompt)) return 'workout';
+  if (/school|class|lecture|lesson/.test(normalizedPrompt)) return 'school';
+  if (/study|learn|course|exam/.test(normalizedPrompt)) return 'study';
+  if (/read|reading|book/.test(normalizedPrompt)) return 'reading';
+  if (/write|writing|essay/.test(normalizedPrompt)) return 'writing';
+  if (/appointment|doctor|dentist|meeting|call|commitment/.test(normalizedPrompt)) return 'commitment';
+  return 'all';
+}
+
+function getCancellationWindowLabel(prompt: string) {
+  const normalizedPrompt = prompt.toLowerCase();
+  if (/\b(?:this|current)\s+week(?:'s|s)?\b.*\b(?:next|following|upcoming)\s+week(?:'s|s)?\b/.test(normalizedPrompt)) return 'this and next week';
+  if (/\b(?:next|following|upcoming)\s+week(?:'s|s)?\b/.test(normalizedPrompt)) return 'next week';
+  if (/\b(?:this|current)\s+week(?:'s|s)?\b/.test(normalizedPrompt)) return 'this week';
+  if (/\bnext\s+7\s+days?\b/.test(normalizedPrompt)) return 'the next 7 days';
+  if (/\btomorrow\b/.test(normalizedPrompt)) return 'tomorrow';
+  if (/\btoday\b/.test(normalizedPrompt)) return 'today';
+  return 'the requested dates';
+}
+
+function matchesCancellationWindow(date: Date, prompt: string) {
+  const normalizedPrompt = prompt.toLowerCase();
+  const today = new Date();
+  today.setHours(12, 0, 0, 0);
+  const target = new Date(date);
+  target.setHours(12, 0, 0, 0);
+  if (/\btoday\b/.test(normalizedPrompt)) return target.toDateString() === today.toDateString();
+  if (/\btomorrow\b/.test(normalizedPrompt)) {
+    today.setDate(today.getDate() + 1);
+    return target.toDateString() === today.toDateString();
+  }
+
+  const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const dayMatch = normalizedPrompt.match(/\b(next|this|on)?\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
+  if (dayMatch) {
+    const targetDay = dayNames.indexOf(dayMatch[2]);
+    const daysAhead = (targetDay - today.getDay() + 7) % 7 || (dayMatch[1] === 'next' || !dayMatch[1] ? 7 : 0);
+    today.setDate(today.getDate() + daysAhead);
+    return target.toDateString() === today.toDateString();
+  }
+
+  const weekStart = new Date(today);
+  weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
+  const hasThisWeek = /\b(?:this|current)\s+week(?:'s|s)?\b/.test(normalizedPrompt);
+  const hasNextWeek = /\b(?:next|following|upcoming)\s+week(?:'s|s)?\b/.test(normalizedPrompt);
+  if (hasThisWeek || hasNextWeek) {
+    const rangeStart = new Date(weekStart);
+    const rangeEnd = new Date(weekStart);
+    if (hasThisWeek && hasNextWeek) {
+      rangeEnd.setDate(rangeEnd.getDate() + 14);
+    } else if (hasNextWeek) {
+      rangeStart.setDate(rangeStart.getDate() + 7);
+      rangeEnd.setDate(rangeEnd.getDate() + 14);
+    } else {
+      rangeEnd.setDate(rangeEnd.getDate() + 7);
+    }
+    return target >= rangeStart && target < rangeEnd;
+  }
+  if (/\bnext\s+7\s+days?\b/.test(normalizedPrompt)) {
+    const rangeEnd = new Date(today);
+    rangeEnd.setDate(rangeEnd.getDate() + 7);
+    return target >= today && target < rangeEnd;
+  }
+  return true;
+}
+
+function matchesCancellationActivity(activityKey: string, title: string, requestedKey: string) {
+  if (requestedKey === 'all') return true;
+  if (activityKey === requestedKey) return true;
+  const normalizedTitle = title.toLowerCase();
+  if (requestedKey === 'workout') return /gym|workout|training|exercise/.test(normalizedTitle);
+  if (requestedKey === 'school') return /school|class|lecture|lesson/.test(normalizedTitle);
+  if (requestedKey === 'commitment') return /appointment|doctor|dentist|meeting|call|commitment/.test(normalizedTitle);
+  return normalizedTitle.includes(requestedKey);
+}
+
+function isSamePlannedActivity(first: PlannedItem, second: PlannedItem) {
+  const getIdentity = (item: PlannedItem) => item.activityKey
+    ?? (/workout|training|exercise|gym/i.test(item.title) ? 'workout'
+      : /school|class|lecture|lesson/i.test(item.title) ? 'school'
+        : item.title.toLowerCase().trim());
+  const firstIdentity = getIdentity(first);
+  const secondIdentity = getIdentity(second);
+  return firstIdentity === secondIdentity && first.date.toDateString() === second.date.toDateString();
+}
+
+function isSameScheduledActivity(plan: PlannedItem, activity: Activity) {
+  const planIdentity = plan.activityKey
+    ?? (/workout|training|exercise|gym/i.test(plan.title) ? 'workout' : /school|class|lecture|lesson/i.test(plan.title) ? 'school' : plan.title.toLowerCase().trim());
+  const activityIdentity = /workout|training|exercise|gym/i.test(activity.title) ? 'workout' : /school|class|lecture|lesson/i.test(activity.title) ? 'school' : activity.title.toLowerCase().trim();
+  return planIdentity === activityIdentity && plan.date.toDateString() === new Date().toDateString();
 }
 
 let speechRecognitionModule: SpeechRecognitionModule | null = null;
@@ -113,6 +216,50 @@ function SwipeToDeleteRow({ children, onDelete, rowStyle: baseStyle }: { childre
   );
 }
 
+function TimeScroller({ label, minutes, onChange }: { label: string; minutes: number; onChange: (minutes: number) => void }) {
+  const startingMinutes = useSharedValue(minutes);
+  const lastStep = useSharedValue(0);
+  const gesture = Gesture.Pan()
+    .activeOffsetY([-8, 8])
+    .failOffsetX([-16, 16])
+    .onStart(() => {
+      startingMinutes.value = minutes;
+      lastStep.value = 0;
+    })
+    .onUpdate((event) => {
+      const step = Math.trunc(-event.translationY / 18);
+      if (step === lastStep.value) return;
+      lastStep.value = step;
+      const nextMinutes = Math.min(1439, Math.max(0, startingMinutes.value + step * 15));
+      runOnJS(onChange)(nextMinutes);
+    });
+
+  return (
+    <View style={styles.scheduleTimeField}>
+      <ThemedText type="small" themeColor="textSecondary">{label}</ThemedText>
+      <GestureDetector gesture={gesture}>
+        <View accessibilityLabel={`${label} ${formatPlannerTime(minutes)}. Swipe up or down to change`} style={styles.timeScroller}>
+          <ThemedText type="small" themeColor="textSecondary" style={styles.timeScrollerHint}>DRAG</ThemedText>
+          <ThemedText style={styles.sliderTimeValue}>{formatPlannerTime(minutes)}</ThemedText>
+          <SymbolView name="chevron.up.chevron.down" tintColor={AccentColors.green} size={16} />
+        </View>
+      </GestureDetector>
+    </View>
+  );
+}
+
+function OverlapTimeChoice({ label, initialMinutes, onApply }: { label: string; initialMinutes: number; onApply: (minutes: number) => void }) {
+  const [minutes, setMinutes] = useState(initialMinutes);
+  return (
+    <View style={styles.overlapTimeChoice}>
+      <TimeScroller label={label} minutes={minutes} onChange={setMinutes} />
+      <Pressable onPress={() => onApply(minutes)} style={styles.overlapApplyButton}>
+        <ThemedText type="small" style={styles.overlapApplyText}>Use this time</ThemedText>
+      </Pressable>
+    </View>
+  );
+}
+
 export default function PlanScreen() {
   const [activities, setActivities] = useState(schedule);
   const [prompt, setPrompt] = useState('');
@@ -120,15 +267,20 @@ export default function PlanScreen() {
   const [proposal, setProposal] = useState<{ activityId: string; start: number } | null>(null);
   const [plannedItems, setPlannedItems] = useState<PlannedItem[]>([]);
   const [timeConflict, setTimeConflict] = useState<ScheduleConflict | null>(null);
+  const [planOverlaps, setPlanOverlaps] = useState<PlanOverlap[]>([]);
   const [pendingPrompt, setPendingPrompt] = useState('');
   const [pendingTime, setPendingTime] = useState<AmbiguousTime | null>(null);
+  const [duplicateConfirmation, setDuplicateConfirmation] = useState<DuplicateConfirmation | null>(null);
+  const [pendingSchedulePrompt, setPendingSchedulePrompt] = useState('');
+  const [scheduleStartMinutes, setScheduleStartMinutes] = useState(9 * 60);
+  const [scheduleEndMinutes, setScheduleEndMinutes] = useState(10 * 60);
   const [planningPreferences, setPlanningPreferences] = useState<PlanningPreferences>({ durationByActivity: {}, startByActivity: {} });
   const [overviewDate, setOverviewDate] = useState<Date | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     { id: 'welcome', role: 'assistant', text: 'Tell me what you want to arrange. I can calculate the number of days and spread sessions across your plan.' },
   ]);
   const [isListening, setIsListening] = useState(false);
-  const [activeModal, setActiveModal] = useState<'calendar' | 'freeTime' | 'timePeriod' | 'dayOverview' | null>(null);
+  const [activeModal, setActiveModal] = useState<'calendar' | 'freeTime' | 'timePeriod' | 'scheduleWindow' | 'dayOverview' | 'duplicateConfirmation' | 'overlapConfirmation' | null>(null);
   const [displayMonth, setDisplayMonth] = useState(initialAppDate.month - 1);
   const [displayYear, setDisplayYear] = useState(initialAppDate.year);
   const [selectedDay, setSelectedDay] = useState(initialAppDate.day);
@@ -168,6 +320,7 @@ export default function PlanScreen() {
       ? activities.map((activity) => ({
         id: activity.id,
         title: activity.title,
+        start: activity.start,
         time: `${formatPlannerTime(activity.start)} · ${formatPlannerDuration(activity.duration)}`,
         kind: activity.type,
       }))
@@ -177,10 +330,11 @@ export default function PlanScreen() {
       .map((item) => ({
         id: item.id,
         title: item.title,
+        start: item.start,
         time: `${formatPlannerTime(item.start)} · ${formatPlannerDuration(item.duration)}`,
         kind: 'AI plan',
       })),
-  ];
+  ].sort((first, second) => first.start - second.start);
   const calendarEventDates = new Set([
     ...(activities.length ? [today.toDateString()] : []),
     ...plannedItems.map((item) => item.date.toDateString()),
@@ -204,6 +358,10 @@ export default function PlanScreen() {
   const arrangedDate = plannedItems[0]?.date ?? today;
   const arrangedActivities = arrangedDate.toDateString() === today.toDateString() ? activities : [];
   const arrangedItems = plannedItems.filter((item) => item.date.toDateString() === arrangedDate.toDateString());
+  const arrangedEntries = [
+    ...arrangedActivities.map((item) => ({ kind: 'activity' as const, item, start: item.start, id: item.id })),
+    ...arrangedItems.map((item) => ({ kind: 'plan' as const, item, start: item.start, id: item.id })),
+  ].sort((first, second) => first.start - second.start);
   const overviewItems = overviewDate ? [
     ...(overviewDate.toDateString() === new Date().toDateString()
       ? activities.map((activity) => ({
@@ -236,6 +394,45 @@ export default function PlanScreen() {
   const submitPrompt = () => {
     const nextPrompt = prompt.trim();
     if (!nextPrompt) return;
+    const cancellationActivity = getCancellationActivity(nextPrompt);
+    if (cancellationActivity) {
+      const matchingPlans = plannedItems.filter((item) => (
+        matchesCancellationActivity(item.activityKey ?? '', item.title, cancellationActivity)
+        && matchesCancellationWindow(item.date, nextPrompt)
+      ));
+      const matchingActivities = activities.filter((activity) => (
+        matchesCancellationActivity(activity.type, activity.title, cancellationActivity)
+        && matchesCancellationWindow(new Date(), nextPrompt)
+      ));
+      setSubmittedPrompt(nextPrompt);
+      setPrompt('');
+      if (matchingPlans.length || matchingActivities.length) {
+        const removedIds = new Set(matchingPlans.map((item) => item.id));
+        setPlannedItems((current) => current.filter((item) => !removedIds.has(item.id)));
+        const removedActivityIds = new Set(matchingActivities.map((activity) => activity.id));
+        setActivities((current) => current.filter((activity) => !removedActivityIds.has(activity.id)));
+        if (timeConflict && removedIds.has(timeConflict.plannedItem.id)) setTimeConflict(null);
+        if (cancellationActivity === 'all') setPlanOverlaps([]);
+        const removedCount = matchingPlans.length + matchingActivities.length;
+        const removedDays = new Set([
+          ...matchingPlans.map((item) => item.date.toDateString()),
+          ...(matchingActivities.length ? [new Date().toDateString()] : []),
+        ]).size;
+        const windowLabel = getCancellationWindowLabel(nextPrompt);
+        const removedLabel = cancellationActivity === 'all' ? 'calendar plans' : `${cancellationActivity} ${removedCount === 1 ? 'plan' : 'plans'}`;
+        setChatMessages((current) => [...current,
+          { id: `user-${Date.now()}`, role: 'user', text: nextPrompt },
+          { id: `assistant-${Date.now()}-removed`, role: 'assistant', text: `Removed ${removedCount} ${removedLabel} across ${removedDays} ${removedDays === 1 ? 'day' : 'days'} in ${windowLabel}.` },
+        ]);
+      } else {
+        const targetLabel = cancellationActivity === 'all' ? 'calendar plans' : `${cancellationActivity} plans`;
+        setChatMessages((current) => [...current,
+          { id: `user-${Date.now()}`, role: 'user', text: nextPrompt },
+          { id: `assistant-${Date.now()}-none`, role: 'assistant', text: `I couldn&apos;t find any ${targetLabel} in that time window.` },
+        ]);
+      }
+      return;
+    }
     const ambiguousTime = findNextAmbiguousTime(nextPrompt);
     if (ambiguousTime) {
       setPendingPrompt(nextPrompt);
@@ -243,7 +440,25 @@ export default function PlanScreen() {
       setActiveModal('timePeriod');
       return;
     }
+    const hasExplicitTime = /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b|\b(?:noon|midnight)\b/i.test(nextPrompt);
+    if (!hasExplicitTime) {
+      setPendingSchedulePrompt(nextPrompt);
+      setActiveModal('scheduleWindow');
+      return;
+    }
     completePrompt(nextPrompt);
+  };
+
+  const submitScheduleWindow = () => {
+    if (scheduleEndMinutes <= scheduleStartMinutes) return;
+    completePrompt(`${pendingSchedulePrompt} from ${formatPlannerTime(scheduleStartMinutes)} to ${formatPlannerTime(scheduleEndMinutes)}`);
+    setPendingSchedulePrompt('');
+  };
+
+  const setSchedulePeriod = (value: number, period: 'AM' | 'PM', setValue: (minutes: number) => void) => {
+    const hourInDay = Math.floor(value / 60) % 12;
+    const minute = value % 60;
+    setValue((period === 'PM' ? 12 : 0) * 60 + hourInDay * 60 + minute);
   };
 
   const chooseTimePeriod = (period: 'AM' | 'PM') => {
@@ -258,7 +473,7 @@ export default function PlanScreen() {
     completePrompt(clarifiedPrompt);
   };
 
-  const completePrompt = (clarifiedPrompt: string) => {
+  const completePrompt = (clarifiedPrompt: string, allowDuplicates = false) => {
     const nextPrompt = clarifiedPrompt.trim();
     if (!nextPrompt) return;
     setSubmittedPrompt(nextPrompt);
@@ -283,10 +498,36 @@ export default function PlanScreen() {
     ];
     const generatedPlan = buildPlanFromPrompt(nextPrompt, new Date(), planningAnchors);
     const hasExplicitTiming = /\b(?:at|by|around|after|before|from|to|until)\s+\d|\d+\s*(?:min|mins|minute|minutes|h|hr|hrs|hour|hours)\b/i.test(nextPrompt);
-    const nextPlan = hasExplicitTiming ? generatedPlan : applyPlanningPreferences(generatedPlan, planningPreferences);
-    setPlannedItems((current) => [...current, ...nextPlan]);
-    rememberPlan(nextPrompt, nextPlan).then(setPlanningPreferences);
-    const nextConflict = findScheduleConflict(nextPlan[0], activities);
+    const requestedPlan = hasExplicitTiming ? generatedPlan : applyPlanningPreferences(generatedPlan, planningPreferences);
+    const duplicateItems = requestedPlan.filter((item, index) => (
+      plannedItems.some((existing) => isSamePlannedActivity(existing, item))
+      || activities.some((activity) => isSameScheduledActivity(item, activity))
+      || requestedPlan.slice(0, index).some((previous) => isSamePlannedActivity(previous, item))
+    ));
+    if (duplicateItems.length && !allowDuplicates) {
+      setDuplicateConfirmation({ prompt: nextPrompt, duplicateItems });
+      setActiveModal('duplicateConfirmation');
+      return;
+    }
+    const addedPlan = requestedPlan.filter((item, index) => (
+      allowDuplicates
+        || (!plannedItems.some((existing) => isSamePlannedActivity(existing, item))
+          && !activities.some((activity) => isSameScheduledActivity(item, activity))
+          && !requestedPlan.slice(0, index).some((previous) => isSamePlannedActivity(previous, item)))
+    ));
+    const mergedPlans = allowDuplicates
+      ? [...plannedItems, ...addedPlan]
+      : [...plannedItems, ...addedPlan].filter((item, index, allItems) => (
+        !allItems.slice(0, index).some((previous) => isSamePlannedActivity(previous, item))
+      ));
+    if (mergedPlans.length !== plannedItems.length || mergedPlans.length !== [...plannedItems, ...addedPlan].length) {
+      setPlannedItems(mergedPlans);
+    }
+    const overlaps = findPlanOverlaps(addedPlan, activities, [...plannedItems, ...addedPlan]);
+    setPlanOverlaps(overlaps);
+    if (overlaps.length) setActiveModal('overlapConfirmation');
+    if (addedPlan.length) rememberPlan(nextPrompt, addedPlan).then(setPlanningPreferences);
+    const nextConflict = addedPlan.length ? findScheduleConflict(addedPlan[0], activities) : null;
     setTimeConflict(nextConflict);
     setChatMessages((current) => [
       ...current,
@@ -294,9 +535,11 @@ export default function PlanScreen() {
       {
         id: `assistant-${Date.now()}`,
         role: 'assistant',
-        text: nextConflict
+        text: !addedPlan.length
+          ? `${requestedPlan[0]?.title ?? 'That activity'} is already scheduled for those days.`
+          : nextConflict
           ? `You already have ${nextConflict.activity.title} at ${formatPlannerTime(nextConflict.activity.start)}. I can move this earlier${nextConflict.suggestedLaterStart !== null ? ` or later` : ''}.`
-          : `I arranged ${nextPlan.length} ${nextPlan.length === 1 ? 'day' : 'days'} of ${nextPlan[0].title.toLowerCase()} at ${formatPlannerDuration(nextPlan[0].duration)} each, starting at ${formatPlannerTime(nextPlan[0].start)}.`,
+          : `I arranged ${addedPlan.length} ${addedPlan.length === 1 ? 'day' : 'days'} of ${addedPlan[0].title.toLowerCase()} at ${formatPlannerDuration(addedPlan[0].duration)} each, starting at ${formatPlannerTime(addedPlan[0].start)}.`,
       },
     ]);
 
@@ -337,6 +580,7 @@ export default function PlanScreen() {
   const deletePlannedItem = (plannedItemId: string) => {
     setPlannedItems((current) => current.filter((item) => item.id !== plannedItemId));
     if (timeConflict?.plannedItem.id === plannedItemId) setTimeConflict(null);
+    setPlanOverlaps((current) => current.filter((overlap) => overlap.plannedItem.id !== plannedItemId));
   };
 
   const deleteOverviewItem = (itemId: string) => {
@@ -345,6 +589,21 @@ export default function PlanScreen() {
     } else {
       deletePlannedItem(itemId);
     }
+  };
+
+  const moveOverlappingPlan = (overlap: PlanOverlap, start: number) => {
+    const conflictingId = overlap.conflictingItem.id;
+    if (!conflictingId) return;
+    if (activities.some((activity) => activity.id === conflictingId)) {
+      setActivities((current) => current.map((activity) => (
+        activity.id === conflictingId ? { ...activity, start } : activity
+      )));
+    } else {
+      setPlannedItems((current) => current.map((item) => (
+        item.id === conflictingId ? { ...item, start } : item
+      )));
+    }
+    setPlanOverlaps((current) => current.filter((item) => item.plannedItem.id !== overlap.plannedItem.id));
   };
 
   const toggleListening = async () => {
@@ -452,35 +711,34 @@ export default function PlanScreen() {
                   </View>
                   <SymbolView name="sparkles" tintColor={AccentColors.green} size={18} />
                 </View>
-                {arrangedActivities.map((item) => (
-                  <View key={`arranged-${item.id}`} style={styles.scheduleRow}>
+                {arrangedEntries.map((entry) => entry.kind === 'activity' ? (
+                  <View key={`arranged-${entry.id}`} style={styles.scheduleRow}>
                     <View style={styles.scheduleIcon}>
                       <SymbolView
                         name={{
-                          ios: item.icon as SFSymbol,
-                          android: item.icon as AndroidSymbol,
-                          web: item.icon as AndroidSymbol,
+                          ios: entry.item.icon as SFSymbol,
+                          android: entry.item.icon as AndroidSymbol,
+                          web: entry.item.icon as AndroidSymbol,
                         }}
                         tintColor={AccentColors.green}
                         size={19}
                       />
                     </View>
                     <View style={styles.scheduleCopy}>
-                      <ThemedText type="small" themeColor="textSecondary">{item.label}</ThemedText>
-                      <ThemedText style={styles.scheduleValue}>{item.value}</ThemedText>
-                      <ThemedText type="small" themeColor="textSecondary">Today · {formatPlannerTime(item.start)} · {formatPlannerDuration(item.duration)}</ThemedText>
+                      <ThemedText type="small" themeColor="textSecondary">{entry.item.label}</ThemedText>
+                      <ThemedText style={styles.scheduleValue}>{entry.item.value}</ThemedText>
+                      <ThemedText type="small" themeColor="textSecondary">Today · {formatPlannerTime(entry.item.start)} · {formatPlannerDuration(entry.item.duration)}</ThemedText>
                     </View>
                     <SymbolView name="chevron.right" tintColor="#A7A9B2" size={16} />
                   </View>
-                ))}
-                {arrangedItems.map((item) => (
-                  <View key={item.id} style={styles.planRow}>
+                ) : (
+                  <View key={`arranged-${entry.id}`} style={styles.planRow}>
                     <View style={styles.planDayBadge}>
-                      <ThemedText type="small" style={styles.planDayText}>{item.date.getDate()}</ThemedText>
+                      <ThemedText type="small" style={styles.planDayText}>{entry.item.date.getDate()}</ThemedText>
                     </View>
                     <View style={styles.planRowCopy}>
-                      <ThemedText style={styles.planItemTitle}>{item.title}</ThemedText>
-                      <ThemedText type="small" themeColor="textSecondary">{formatPlanDate(item.date)} · {formatPlannerTime(item.start)} · {formatPlannerDuration(item.duration)}</ThemedText>
+                      <ThemedText style={styles.planItemTitle}>{entry.item.title}</ThemedText>
+                      <ThemedText type="small" themeColor="textSecondary">{formatPlanDate(entry.item.date)} · {formatPlannerTime(entry.item.start)} · {formatPlannerDuration(entry.item.duration)}</ThemedText>
                     </View>
                   </View>
                 ))}
@@ -622,11 +880,11 @@ export default function PlanScreen() {
               <ThemedText type="small" themeColor="textSecondary">{calendarEvents.length} {calendarEvents.length === 1 ? 'event' : 'events'}</ThemedText>
             </View>
             {calendarEvents.length ? calendarEvents.map((event) => (
-              <View key={event.id} style={styles.agendaCard}>
+              <SwipeToDeleteRow key={event.id} onDelete={() => deleteOverviewItem(event.id)} rowStyle={styles.agendaCard}>
                 <ThemedText type="small" themeColor="textSecondary">{event.time}</ThemedText>
                 <ThemedText style={styles.agendaItem}>{event.title}</ThemedText>
                 <ThemedText type="small" themeColor="textSecondary">{event.kind}</ThemedText>
-              </View>
+              </SwipeToDeleteRow>
             )) : (
               <ThemedText type="small" themeColor="textSecondary">
                 Add a plan in the planning session to see it here.
@@ -724,6 +982,164 @@ export default function PlanScreen() {
               <ThemedText type="small" themeColor="textSecondary">Afternoon / evening</ThemedText>
             </Pressable>
           </View>
+        </View>
+      </SwipeSheet>
+
+      <SwipeSheet
+        visible={activeModal === 'scheduleWindow'}
+        onClose={() => {
+          setActiveModal(null);
+          setPendingSchedulePrompt('');
+        }}>
+        <View style={styles.calendarSheet}>
+          <View style={styles.calendarHeader}>
+            <View>
+              <ThemedText type="small" style={styles.eyebrow}>SET YOUR TIME</ThemedText>
+              <ThemedText style={styles.calendarTitle}>When should it happen?</ThemedText>
+            </View>
+            <Pressable
+              accessibilityLabel="Close schedule time popup"
+              accessibilityRole="button"
+              onPress={() => {
+                setActiveModal(null);
+                setPendingSchedulePrompt('');
+              }}
+              style={styles.closeButton}>
+              <SymbolView name="xmark" tintColor={AccentColors.purple} size={18} />
+            </Pressable>
+          </View>
+          <ThemedText type="small" themeColor="textSecondary" style={styles.timePeriodPrompt}>
+            I can plan “{pendingSchedulePrompt}”. Choose a start and end time so I can place it around your other plans.
+          </ThemedText>
+          <View style={styles.scheduleTimeFields}>
+            <TimeScroller label="STARTS" minutes={scheduleStartMinutes} onChange={setScheduleStartMinutes} />
+            <TimeScroller label="ENDS" minutes={scheduleEndMinutes} onChange={setScheduleEndMinutes} />
+          </View>
+          <View style={styles.schedulePeriodFields}>
+            <View style={styles.schedulePeriodColumn}>
+              <ThemedText type="small" themeColor="textSecondary">START PERIOD</ThemedText>
+              <View style={styles.periodToggle}>
+                {(['AM', 'PM'] as const).map((period) => (
+                  <Pressable key={`start-${period}`} accessibilityLabel={`Start time ${period}`} accessibilityRole="button" onPress={() => setSchedulePeriod(scheduleStartMinutes, period, setScheduleStartMinutes)} style={[styles.periodButton, (scheduleStartMinutes >= 720 ? 'PM' : 'AM') === period && styles.periodButtonSelected]}>
+                    <ThemedText type="small" style={(scheduleStartMinutes >= 720 ? 'PM' : 'AM') === period ? styles.periodButtonSelectedText : styles.periodButtonText}>{period}</ThemedText>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+            <View style={styles.schedulePeriodColumn}>
+              <ThemedText type="small" themeColor="textSecondary">END PERIOD</ThemedText>
+              <View style={styles.periodToggle}>
+                {(['AM', 'PM'] as const).map((period) => (
+                  <Pressable key={`end-${period}`} accessibilityLabel={`End time ${period}`} accessibilityRole="button" onPress={() => setSchedulePeriod(scheduleEndMinutes, period, setScheduleEndMinutes)} style={[styles.periodButton, (scheduleEndMinutes >= 720 ? 'PM' : 'AM') === period && styles.periodButtonSelected]}>
+                    <ThemedText type="small" style={(scheduleEndMinutes >= 720 ? styles.periodButtonSelectedText : styles.periodButtonText)}>{period}</ThemedText>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          </View>
+          <Pressable
+            accessibilityLabel="Add schedule time"
+            accessibilityRole="button"
+            onPress={submitScheduleWindow}
+            style={({ pressed }) => [styles.scheduleTimeConfirm, pressed && styles.pressed]}>
+            <ThemedText style={styles.scheduleTimeConfirmText}>Add to plan</ThemedText>
+            <SymbolView name="arrow.up.right" tintColor={AccentColors.charcoalText} size={17} />
+          </Pressable>
+        </View>
+      </SwipeSheet>
+
+      <SwipeSheet
+        visible={activeModal === 'duplicateConfirmation'}
+        onClose={() => {
+          setActiveModal(null);
+          setDuplicateConfirmation(null);
+        }}>
+        <View style={styles.calendarSheet}>
+          <View style={styles.calendarHeader}>
+            <View>
+              <ThemedText type="small" style={styles.eyebrow}>ALREADY PLANNED</ThemedText>
+              <ThemedText style={styles.calendarTitle}>Add another copy?</ThemedText>
+            </View>
+            <Pressable accessibilityLabel="Close duplicate plan popup" accessibilityRole="button" onPress={() => { setActiveModal(null); setDuplicateConfirmation(null); }} style={styles.closeButton}>
+              <SymbolView name="xmark" tintColor={AccentColors.purple} size={18} />
+            </Pressable>
+          </View>
+          <ThemedText type="small" themeColor="textSecondary" style={styles.timePeriodPrompt}>
+            This plan already exists on {duplicateConfirmation?.duplicateItems.length ?? 0} {duplicateConfirmation?.duplicateItems.length === 1 ? 'day' : 'days'}. Would you like to add another copy anyway?
+          </ThemedText>
+          <View style={styles.duplicateDateList}>
+            {duplicateConfirmation?.duplicateItems.map((item) => (
+              <View key={item.id} style={styles.duplicateDateRow}>
+                <SymbolView name="calendar" tintColor={AccentColors.green} size={17} />
+                <ThemedText type="small" style={styles.duplicateDateText}>{formatPlanDate(item.date)} · {item.title}</ThemedText>
+              </View>
+            ))}
+          </View>
+          <View style={styles.proposalActions}>
+            <Pressable
+              onPress={() => {
+                setActiveModal(null);
+                setDuplicateConfirmation(null);
+              }}
+              style={styles.rejectButton}>
+              <ThemedText type="small" themeColor="textSecondary">Keep existing</ThemedText>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                const duplicatePrompt = duplicateConfirmation?.prompt;
+                setDuplicateConfirmation(null);
+                if (duplicatePrompt) completePrompt(duplicatePrompt, true);
+              }}
+              style={styles.acceptButton}>
+              <ThemedText type="small" style={styles.acceptText}>Add anyway</ThemedText>
+            </Pressable>
+          </View>
+        </View>
+      </SwipeSheet>
+
+      <SwipeSheet
+        visible={activeModal === 'overlapConfirmation'}
+        onClose={() => {
+          setActiveModal(null);
+          setPlanOverlaps([]);
+        }}>
+        <View style={styles.calendarSheet}>
+          <View style={styles.calendarHeader}>
+            <View>
+              <ThemedText type="small" style={styles.eyebrow}>OVERLAPPING PLANS</ThemedText>
+              <ThemedText style={styles.calendarTitle}>How should I move them?</ThemedText>
+            </View>
+            <Pressable accessibilityLabel="Close overlap popup" accessibilityRole="button" onPress={() => { setActiveModal(null); setPlanOverlaps([]); }} style={styles.closeButton}>
+              <SymbolView name="xmark" tintColor={AccentColors.purple} size={18} />
+            </Pressable>
+          </View>
+          <ThemedText type="small" themeColor="textSecondary" style={styles.timePeriodPrompt}>
+            I found {planOverlaps.length} {planOverlaps.length === 1 ? 'overlap' : 'overlaps'}. Choose an earlier or later slot for each plan, or keep the requested time.
+          </ThemedText>
+          <View style={styles.duplicateDateList}>
+            {planOverlaps.map((overlap) => (
+              <View key={overlap.plannedItem.id} style={styles.overlapCard}>
+                <ThemedText style={styles.proposalTitle}>{overlap.plannedItem.title}</ThemedText>
+                <ThemedText type="small" themeColor="textSecondary">
+                  Your new {overlap.plannedItem.title} stays at {formatPlannerTime(overlap.plannedItem.start)}. {overlap.conflictingItem.title} is currently in the way at {formatPlannerTime(overlap.conflictingItem.start)}.
+                </ThemedText>
+                <View style={styles.overlapChoices}>
+                  {overlap.suggestedEarlierStart !== null ? (
+                    <OverlapTimeChoice label="MOVE EXISTING EARLIER TO" initialMinutes={overlap.suggestedEarlierStart} onApply={(minutes) => moveOverlappingPlan(overlap, minutes)} />
+                  ) : null}
+                  {overlap.suggestedLaterStart !== null ? (
+                    <OverlapTimeChoice label="MOVE EXISTING LATER TO" initialMinutes={overlap.suggestedLaterStart} onApply={(minutes) => moveOverlappingPlan(overlap, minutes)} />
+                  ) : null}
+                </View>
+                <Pressable onPress={() => setPlanOverlaps((current) => current.filter((item) => item.plannedItem.id !== overlap.plannedItem.id))} style={styles.rejectButton}>
+                  <ThemedText type="small" themeColor="textSecondary">Keep requested time</ThemedText>
+                </Pressable>
+              </View>
+            ))}
+          </View>
+          <Pressable onPress={() => { setActiveModal(null); setPlanOverlaps([]); }} style={styles.scheduleTimeConfirm}>
+            <ThemedText style={styles.scheduleTimeConfirmText}>Done</ThemedText>
+          </Pressable>
         </View>
       </SwipeSheet>
 
@@ -865,6 +1281,116 @@ const styles = StyleSheet.create({
     color: AccentColors.charcoalText,
     backgroundColor: AccentColors.green,
     fontFamily: 'ManropeExtraBold',
+  },
+  scheduleTimeFields: {
+    flexDirection: 'row',
+    gap: Spacing.two,
+  },
+  schedulePeriodFields: {
+    flexDirection: 'row',
+    gap: Spacing.two,
+  },
+  schedulePeriodColumn: {
+    flex: 1,
+    gap: Spacing.two,
+  },
+  scheduleTimeField: {
+    flex: 1,
+    gap: Spacing.two,
+  },
+  timeScroller: {
+    minHeight: 96,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#25272C',
+    borderRadius: 16,
+    paddingVertical: Spacing.two,
+    gap: Spacing.one,
+  },
+  timeScrollerHint: {
+    fontSize: 10,
+    letterSpacing: 1.2,
+    fontWeight: '800',
+  },
+  sliderTimeValue: {
+    color: AccentColors.purple,
+    fontSize: 22,
+    fontWeight: '800',
+  },
+  periodToggle: {
+    flexDirection: 'row',
+    backgroundColor: '#25272C',
+    borderRadius: 12,
+    padding: Spacing.one,
+    gap: Spacing.one,
+  },
+  periodButton: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: Spacing.two,
+    borderRadius: 9,
+  },
+  periodButtonSelected: {
+    backgroundColor: AccentColors.green,
+  },
+  periodButtonText: {
+    color: '#A7A9B2',
+    fontWeight: '800',
+  },
+  periodButtonSelectedText: {
+    color: AccentColors.charcoalText,
+    fontWeight: '800',
+  },
+  scheduleTimeConfirm: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.two,
+    backgroundColor: AccentColors.green,
+    borderRadius: 16,
+    paddingVertical: Spacing.three,
+  },
+  scheduleTimeConfirmText: {
+    color: AccentColors.charcoalText,
+    fontWeight: '800',
+  },
+  duplicateDateList: {
+    gap: Spacing.two,
+  },
+  duplicateDateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    backgroundColor: '#25272C',
+    borderRadius: 14,
+    padding: Spacing.three,
+  },
+  overlapCard: {
+    backgroundColor: '#25272C',
+    borderRadius: 16,
+    padding: Spacing.three,
+    gap: Spacing.two,
+  },
+  overlapChoices: {
+    gap: Spacing.two,
+  },
+  overlapTimeChoice: {
+    gap: Spacing.two,
+  },
+  overlapApplyButton: {
+    alignSelf: 'flex-start',
+    borderRadius: 12,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+    backgroundColor: AccentColors.green,
+  },
+  overlapApplyText: {
+    color: AccentColors.charcoalText,
+    fontWeight: '800',
+  },
+  duplicateDateText: {
+    flex: 1,
+    color: '#E8E8EB',
   },
   timePeriodActions: {
     flexDirection: 'row',

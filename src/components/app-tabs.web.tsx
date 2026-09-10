@@ -6,7 +6,7 @@ import {
   TabTrigger,
   TabTriggerSlotProps,
 } from 'expo-router/ui';
-import { SymbolView, type AndroidSymbol, type SFSymbol } from 'expo-symbols';
+import { SymbolView } from 'expo-symbols';
 import { Pressable, StyleSheet, useColorScheme, View } from 'react-native';
 
 import { ExternalLink } from './external-link';
@@ -22,19 +22,10 @@ export default function AppTabs() {
       <TabList asChild>
         <CustomTabList>
           <TabTrigger name="home" href="/" asChild>
-            <TabButton icon="home">Home</TabButton>
+            <TabButton>Home</TabButton>
           </TabTrigger>
-          <TabTrigger name="plan" href="/plan" asChild>
-            <TabButton icon="calendar">Plan</TabButton>
-          </TabTrigger>
-          <TabTrigger name="stack" href="/stack" asChild>
-            <TabButton icon="layers">Stack</TabButton>
-          </TabTrigger>
-          <TabTrigger name="fuel" href="/fuel" asChild>
-            <TabButton icon="flame">Fuel</TabButton>
-          </TabTrigger>
-          <TabTrigger name="train" href="/train" asChild>
-            <TabButton icon="fitness-center">Train</TabButton>
+          <TabTrigger name="explore" href="/explore" asChild>
+            <TabButton>Explore</TabButton>
           </TabTrigger>
         </CustomTabList>
       </TabList>
@@ -42,23 +33,12 @@ export default function AppTabs() {
   );
 }
 
-export function TabButton({ children, icon, isFocused, ...props }: TabTriggerSlotProps & { icon: string }) {
-  const colors = Colors[useColorScheme() === 'dark' ? 'dark' : 'light'];
-
+export function TabButton({ children, isFocused, ...props }: TabTriggerSlotProps) {
   return (
     <Pressable {...props} style={({ pressed }) => pressed && styles.pressed}>
       <ThemedView
         type={isFocused ? 'backgroundSelected' : 'backgroundElement'}
         style={styles.tabButtonView}>
-        <SymbolView
-          tintColor={isFocused ? colors.text : '#D14DFF'}
-          name={{
-            ios: icon as SFSymbol,
-            android: icon as AndroidSymbol,
-            web: icon as AndroidSymbol,
-          }}
-          size={16}
-        />
         <ThemedText type="small" themeColor={isFocused ? 'text' : 'textSecondary'}>
           {children}
         </ThemedText>
@@ -74,8 +54,8 @@ export function CustomTabList(props: TabListProps) {
   return (
     <View {...props} style={styles.tabListContainer}>
       <ThemedView type="backgroundElement" style={styles.innerContainer}>
-          <ThemedText type="smallBold" style={styles.brandText}>
-          final form
+        <ThemedText type="smallBold" style={styles.brandText}>
+          Expo Starter
         </ThemedText>
 
         {props.children}
@@ -99,15 +79,15 @@ const styles = StyleSheet.create({
   tabListContainer: {
     position: 'absolute',
     width: '100%',
-    padding: Spacing.four,
+    padding: Spacing.three,
     justifyContent: 'center',
     alignItems: 'center',
     flexDirection: 'row',
   },
   innerContainer: {
-    paddingVertical: Spacing.three,
-    paddingHorizontal: Spacing.four,
-    borderRadius: 24,
+    paddingVertical: Spacing.two,
+    paddingHorizontal: Spacing.five,
+    borderRadius: Spacing.five,
     flexDirection: 'row',
     alignItems: 'center',
     flexGrow: 1,
@@ -121,12 +101,9 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   tabButtonView: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.one,
-    paddingVertical: Spacing.two,
+    paddingVertical: Spacing.one,
     paddingHorizontal: Spacing.three,
-    borderRadius: 14,
+    borderRadius: Spacing.three,
   },
   externalPressable: {
     flexDirection: 'row',

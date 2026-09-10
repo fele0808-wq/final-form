@@ -16,6 +16,7 @@ export type FreeBlock = {
 export type PlannedItem = {
   id: string;
   title: string;
+  activityKey?: string;
   date: Date;
   start: number;
   duration: number;
@@ -32,6 +33,13 @@ export type ScheduleConflict = {
   plannedItem: PlannedItem;
   activity: Activity;
   suggestedStart: number | null;
+  suggestedLaterStart: number | null;
+};
+
+export type PlanOverlap = {
+  plannedItem: PlannedItem;
+  conflictingItem: { id?: string; title: string; start: number; duration: number; date: Date };
+  suggestedEarlierStart: number | null;
   suggestedLaterStart: number | null;
 };
 
@@ -152,6 +160,76 @@ export function findScheduleConflict(plannedItem: PlannedItem, activities: Activ
   };
 }
 
+export function findPlanOverlaps(plannedItems: PlannedItem[], activities: Activity[], existingPlans: PlannedItem[] = []): PlanOverlap[] {
+  const overlaps: PlanOverlap[] = [];
+  const allExisting = [
+    ...activities.map((activity) => ({
+      id: activity.id,
+      title: activity.title,
+      start: activity.start,
+      duration: activity.duration,
+      date: new Date(),
+    })),
+    ...existingPlans,
+  ];
+
+  for (const plannedItem of plannedItems) {
+    const conflictingItem = allExisting.find((item) => (
+      item !== plannedItem
+      && item.date.toDateString() === plannedItem.date.toDateString()
+      && plannedItem.start < item.start + item.duration
+      && plannedItem.start + plannedItem.duration > item.start
+    ));
+    if (!conflictingItem) continue;
+
+    const occupiedAroundNewPlan = [
+      ...allExisting
+        .filter((item) => item.date.toDateString() === plannedItem.date.toDateString() && item !== conflictingItem)
+        .map((item) => ({ start: item.start, end: item.start + item.duration })),
+      { start: plannedItem.start, end: plannedItem.start + plannedItem.duration },
+    ];
+    const conflictingPlan = {
+      ...plannedItem,
+      start: conflictingItem.start,
+      duration: conflictingItem.duration,
+    };
+    const earlierStart = findAvailableRelatedSlot(conflictingPlan, occupiedAroundNewPlan, 'earlier');
+    const laterStart = findAvailableRelatedSlot(conflictingPlan, occupiedAroundNewPlan, 'later', plannedItem.start + plannedItem.duration);
+    overlaps.push({
+      plannedItem,
+      conflictingItem,
+      suggestedEarlierStart: earlierStart,
+      suggestedLaterStart: laterStart,
+    });
+  }
+  return overlaps;
+}
+
+function findAvailableRelatedSlot(
+  plannedItem: PlannedItem,
+  occupied: Array<{ start: number; end: number }>,
+  direction: 'earlier' | 'later',
+  minimumStart = DAY_START,
+) {
+  const sorted = [...occupied].sort((first, second) => first.start - second.start);
+  if (direction === 'earlier') {
+    let end = plannedItem.start;
+    for (let index = sorted.length - 1; index >= 0; index -= 1) {
+      const block = sorted[index];
+      if (block.end <= end && end - block.end >= plannedItem.duration) return end - plannedItem.duration;
+      if (block.end < end) end = block.start;
+    }
+    return end - plannedItem.duration >= DAY_START ? end - plannedItem.duration : null;
+  }
+
+  let start = Math.max(minimumStart, plannedItem.start + plannedItem.duration);
+  for (const block of sorted) {
+    if (block.start >= start && block.start - start >= plannedItem.duration) return start;
+    if (block.end > start) start = block.end;
+  }
+  return start + plannedItem.duration <= DAY_END ? start : null;
+}
+
 export function buildPlanFromPrompt(prompt: string, startDate = new Date(), anchors: PlanningAnchor[] = []): PlannedItem[] {
   const normalizedPrompt = prompt.toLowerCase();
   const dayMatch = normalizedPrompt.match(/(\d+)\s*(?:day|days)/);
@@ -175,8 +253,12 @@ export function buildPlanFromPrompt(prompt: string, startDate = new Date(), anch
     ? /h|hr|hour/.test(durationMatch[2]) ? Number(durationMatch[1]) * 60 : Number(durationMatch[1])
     : 60);
   const title = getPromptTitle(normalizedPrompt);
-  const planDates = getPlanDates(startDate, days, recurrence, normalizedPrompt);
+  const activityKey = getPromptActivityKey(normalizedPrompt);
   const relation = parsePromptRelation(normalizedPrompt);
+  const generatedDates = getPlanDates(startDate, days, recurrence, normalizedPrompt);
+  const planDates = relation
+    ? generatedDates.filter((date) => hasPlanningAnchorOnDate(relation.activity, date, anchors))
+    : generatedDates;
   const batchId = `${Date.now()}-${planBatchSequence++}`;
 
   return planDates.map((date, index) => {
@@ -190,6 +272,7 @@ export function buildPlanFromPrompt(prompt: string, startDate = new Date(), anch
     return {
       id: `ai-plan-${batchId}-${date.toISOString()}-${index}`,
       title,
+      activityKey,
       date,
       start: firstStart,
       duration,
@@ -205,13 +288,27 @@ function parsePromptRelation(prompt: string) {
 function findPlanningAnchor(activityQuery: string, date: Date, anchors: PlanningAnchor[] = []) {
   const normalizedQuery = activityQuery.toLowerCase();
   const queryWords = normalizedQuery.split(/\s+/).filter((word) => word.length > 2);
-  return anchors.find((anchor) => {
-    const sameDate = !anchor.date || anchor.date.toDateString() === date.toDateString();
+  const matchesActivity = (anchor: PlanningAnchor, requireSameDate: boolean) => {
+    const sameDate = !requireSameDate || !anchor.date || anchor.date.toDateString() === date.toDateString();
     const normalizedTitle = anchor.title.toLowerCase();
     const titleWords = normalizedTitle.split(/\s+/).filter((word) => word.length > 2);
     const sharesMeaningfulWord = queryWords.some((word) => titleWords.some((titleWord) => titleWord.includes(word) || word.includes(titleWord)));
     return sameDate && (normalizedTitle.includes(normalizedQuery) || normalizedQuery.includes(normalizedTitle) || sharesMeaningfulWord);
-  }) ?? null;
+  };
+  return anchors.find((anchor) => matchesActivity(anchor, true))
+    ?? anchors.find((anchor) => matchesActivity(anchor, false))
+    ?? null;
+}
+
+function hasPlanningAnchorOnDate(activityQuery: string, date: Date, anchors: PlanningAnchor[]) {
+  const normalizedQuery = activityQuery.toLowerCase();
+  return anchors.some((anchor) => {
+    if (!anchor.date || anchor.date.toDateString() !== date.toDateString()) return false;
+    const normalizedTitle = anchor.title.toLowerCase();
+    return normalizedTitle.includes(normalizedQuery)
+      || normalizedQuery.includes(normalizedTitle)
+      || normalizedTitle.split(/\s+/).some((word) => word.length > 2 && normalizedQuery.includes(word));
+  });
 }
 
 function getRecurrence(prompt: string): 'weekday' | 'weekend' | null {
@@ -221,6 +318,9 @@ function getRecurrence(prompt: string): 'weekday' | 'weekend' | null {
 }
 
 function getPlanDates(startDate: Date, count: number, recurrence: 'weekday' | 'weekend' | null, prompt: string) {
+  const specificDate = getSpecificPromptDate(startDate, prompt);
+  if (specificDate) return [specificDate];
+
   const weekStart = new Date(startDate);
   weekStart.setHours(12, 0, 0, 0);
   weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
@@ -229,6 +329,13 @@ function getPlanDates(startDate: Date, count: number, recurrence: 'weekday' | 'w
     const endOfNextWeek = new Date(weekStart);
     endOfNextWeek.setDate(endOfNextWeek.getDate() + 13);
     return createMatchingDates(startDate, endOfNextWeek, recurrence);
+  }
+  if (recurrence && /\b(?:next|following|upcoming)\s+week(?:'s|s)?\b/.test(prompt)) {
+    const nextWeekStart = new Date(weekStart);
+    nextWeekStart.setDate(nextWeekStart.getDate() + 7);
+    const nextWeekEnd = new Date(nextWeekStart);
+    nextWeekEnd.setDate(nextWeekEnd.getDate() + 6);
+    return createMatchingDates(nextWeekStart, nextWeekEnd, recurrence);
   }
   if (!recurrence && /\bnext\s+week\b/.test(prompt)) {
     weekStart.setDate(weekStart.getDate() + 7);
@@ -259,6 +366,34 @@ function getPlanDates(startDate: Date, count: number, recurrence: 'weekday' | 'w
     offset += 1;
   }
   return dates;
+}
+
+function getSpecificPromptDate(startDate: Date, prompt: string) {
+  const normalizedPrompt = prompt.toLowerCase();
+  const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const dayMatch = normalizedPrompt.match(/\b(next|this|on)?\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
+  if (dayMatch) {
+    const targetDay = dayNames.indexOf(dayMatch[2]);
+    const currentDay = startDate.getDay();
+    let daysAhead = (targetDay - currentDay + 7) % 7;
+    if (dayMatch[1] === 'next' || (dayMatch[1] === undefined && daysAhead === 0)) daysAhead += 7;
+    const date = new Date(startDate);
+    date.setHours(12, 0, 0, 0);
+    date.setDate(date.getDate() + daysAhead);
+    return date;
+  }
+  if (/\btomorrow\b/.test(normalizedPrompt)) {
+    const date = new Date(startDate);
+    date.setHours(12, 0, 0, 0);
+    date.setDate(date.getDate() + 1);
+    return date;
+  }
+  if (/\btoday\b/.test(normalizedPrompt)) {
+    const date = new Date(startDate);
+    date.setHours(12, 0, 0, 0);
+    return date;
+  }
+  return null;
 }
 
 function createMatchingDates(startDate: Date, endDate: Date, recurrence: 'weekday' | 'weekend') {
@@ -294,6 +429,17 @@ function getPromptTitle(prompt: string) {
   if (/school|class|lecture|lesson/.test(requestedActivity)) return 'School';
   if (/meeting|call|appointment/.test(requestedActivity)) return 'Scheduled commitment';
   return 'Focus session';
+}
+
+function getPromptActivityKey(prompt: string) {
+  const requestedActivity = prompt.split(/\b(?:after|before)\b/)[0];
+  if (/workout|training|exercise|gym/.test(requestedActivity)) return 'workout';
+  if (/school|class|lecture|lesson/.test(requestedActivity)) return 'school';
+  if (/study|learn|course|exam/.test(requestedActivity)) return 'study';
+  if (/read|reading|book/.test(requestedActivity)) return 'reading';
+  if (/write|writing|essay/.test(requestedActivity)) return 'writing';
+  if (/meeting|call|appointment/.test(requestedActivity)) return 'commitment';
+  return 'focus';
 }
 
 export function formatPlannerTime(minutes: number) {
