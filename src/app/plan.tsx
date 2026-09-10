@@ -11,6 +11,7 @@ import { SwipeSheet } from '@/components/swipe-sheet';
 import { AccentColors, BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
 import { getAppDateParts, APP_TIME_ZONE, formatAppDate } from '@/constants/date-time';
 import { DAY_END, DAY_START, buildPlanFromPrompt, findScheduleConflict, formatPlannerDuration, formatPlannerTime, getFreeBlocks, type Activity, type PlannedItem, type PlanningAnchor, type ScheduleConflict } from '@/lib/planner';
+import { applyPlanningPreferences, loadPlanningPreferences, rememberMovedPlan, rememberPlan, type PlanningPreferences } from '@/lib/planning-memory';
 
 const schedule: Array<{
   id: string;
@@ -121,6 +122,7 @@ export default function PlanScreen() {
   const [timeConflict, setTimeConflict] = useState<ScheduleConflict | null>(null);
   const [pendingPrompt, setPendingPrompt] = useState('');
   const [pendingTime, setPendingTime] = useState<AmbiguousTime | null>(null);
+  const [planningPreferences, setPlanningPreferences] = useState<PlanningPreferences>({ durationByActivity: {}, startByActivity: {} });
   const [overviewDate, setOverviewDate] = useState<Date | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     { id: 'welcome', role: 'assistant', text: 'Tell me what you want to arrange. I can calculate the number of days and spread sessions across your plan.' },
@@ -150,6 +152,10 @@ export default function PlanScreen() {
       resultSubscription.remove();
       errorSubscription.remove();
     };
+  }, []);
+
+  useEffect(() => {
+    loadPlanningPreferences().then(setPlanningPreferences);
   }, []);
 
   const daysInMonth = new Date(displayYear, displayMonth + 1, 0).getDate();
@@ -275,8 +281,11 @@ export default function PlanScreen() {
         date: item.date,
       })),
     ];
-    const nextPlan = buildPlanFromPrompt(nextPrompt, new Date(), planningAnchors);
+    const generatedPlan = buildPlanFromPrompt(nextPrompt, new Date(), planningAnchors);
+    const hasExplicitTiming = /\b(?:at|by|around|after|before|from|to|until)\s+\d|\d+\s*(?:min|mins|minute|minutes|h|hr|hrs|hour|hours)\b/i.test(nextPrompt);
+    const nextPlan = hasExplicitTiming ? generatedPlan : applyPlanningPreferences(generatedPlan, planningPreferences);
     setPlannedItems((current) => [...current, ...nextPlan]);
+    rememberPlan(nextPrompt, nextPlan).then(setPlanningPreferences);
     const nextConflict = findScheduleConflict(nextPlan[0], activities);
     setTimeConflict(nextConflict);
     setChatMessages((current) => [
@@ -302,9 +311,12 @@ export default function PlanScreen() {
   const acceptTimeSuggestion = (suggestedStart: number | null) => {
     if (suggestedStart === null) return;
     const conflictedItemId = timeConflict?.plannedItem.id;
-    setPlannedItems((current) => current.map((item) => (
-      item.id === conflictedItemId ? { ...item, start: suggestedStart } : item
-    )));
+    setPlannedItems((current) => current.map((item) => {
+      if (item.id !== conflictedItemId) return item;
+      const movedItem = { ...item, start: suggestedStart };
+      rememberMovedPlan(movedItem).then(setPlanningPreferences);
+      return movedItem;
+    }));
     setTimeConflict(null);
   };
 
