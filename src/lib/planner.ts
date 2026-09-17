@@ -29,6 +29,18 @@ export type PlanningAnchor = {
   date?: Date;
 };
 
+export type PlanningContext = {
+  activities: Array<{
+    key: string;
+    label: string;
+    aliases: string[];
+    preferredDuration?: number;
+    preferredStart?: number;
+  }>;
+};
+
+type Recurrence = 'weekday' | 'weekend' | 'daily' | null;
+
 export type ScheduleConflict = {
   plannedItem: PlannedItem;
   activity: Activity;
@@ -230,17 +242,18 @@ function findAvailableRelatedSlot(
   return start + plannedItem.duration <= DAY_END ? start : null;
 }
 
-export function buildPlanFromPrompt(prompt: string, startDate = new Date(), anchors: PlanningAnchor[] = []): PlannedItem[] {
+export function buildPlanFromPrompt(prompt: string, startDate = new Date(), anchors: PlanningAnchor[] = [], context?: PlanningContext, recurringDays?: number[], recurringWeeks = 4): PlannedItem[] {
   const normalizedPrompt = prompt.toLowerCase();
+  const normalizedRecurringWeeks = Math.max(1, Math.floor(recurringWeeks));
   const dayMatch = normalizedPrompt.match(/(\d+)\s*(?:day|days)/);
   const weekMatch = normalizedPrompt.match(/(\d+)\s*weeks?/);
   const recurrence = getRecurrence(normalizedPrompt);
-  const recurringDays = recurrence === 'weekday' ? 5 : recurrence === 'weekend' ? 2 : null;
-  const days = Math.min(recurrence ? 30 : 14, Math.max(1, dayMatch
+  const recurrenceDayCount = recurrence === 'weekday' ? 5 : recurrence === 'weekend' ? 2 : recurrence === 'daily' ? 7 : null;
+  const days = Math.min(recurrence ? 30 : recurringDays?.length ? recurringDays.length * normalizedRecurringWeeks : 14, Math.max(1, dayMatch
     ? Number(dayMatch[1])
-    : weekMatch && recurringDays
-      ? Number(weekMatch[1]) * recurringDays
-      : recurringDays ?? (normalizedPrompt.includes('week') ? 5 : 1)));
+    : weekMatch && recurrenceDayCount
+      ? Number(weekMatch[1]) * recurrenceDayCount
+      : recurringDays?.length ? recurringDays.length * normalizedRecurringWeeks : recurrenceDayCount ?? (normalizedPrompt.includes('week') ? 5 : 1)));
   const durationMatch = normalizedPrompt.match(/(\d+)\s*(min|mins|minute|minutes|h|hr|hrs|hour|hours)/);
   const timeRange = parsePromptTimeRange(normalizedPrompt);
   const timeValues = normalizedPrompt.match(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b/g)?.map((value) => parsePromptTime(value)).filter((value): value is number => value !== null) ?? [];
@@ -249,13 +262,16 @@ export function buildPlanFromPrompt(prompt: string, startDate = new Date(), anch
     : timeValues.length >= 2 && timeValues[1] > timeValues[0]
     ? timeValues[1] - timeValues[0]
     : null;
+  const learnedActivity = findLearnedActivity(normalizedPrompt, context);
   const duration = rangeDuration ?? (durationMatch
     ? /h|hr|hour/.test(durationMatch[2]) ? Number(durationMatch[1]) * 60 : Number(durationMatch[1])
-    : 60);
-  const title = getPromptTitle(normalizedPrompt);
-  const activityKey = getPromptActivityKey(normalizedPrompt);
+    : learnedActivity?.preferredDuration ?? 60);
+  const title = learnedActivity?.label ?? getPromptTitle(normalizedPrompt);
+  const activityKey = learnedActivity?.key ?? getPromptActivityKey(normalizedPrompt);
   const relation = parsePromptRelation(normalizedPrompt);
-  const generatedDates = getPlanDates(startDate, days, recurrence, normalizedPrompt);
+  const generatedDates = recurringDays?.length
+    ? getSelectedRecurringDates(startDate, recurringDays, normalizedRecurringWeeks)
+    : getPlanDates(startDate, days, recurrence, normalizedPrompt);
   const planDates = relation
     ? generatedDates.filter((date) => hasPlanningAnchorOnDate(relation.activity, date, anchors))
     : generatedDates;
@@ -278,6 +294,22 @@ export function buildPlanFromPrompt(prompt: string, startDate = new Date(), anch
       duration,
     };
   });
+}
+
+function getSelectedRecurringDates(startDate: Date, selectedDays: number[], weeks: number) {
+  const dates: Date[] = [];
+  const cursor = new Date(startDate);
+  cursor.setHours(12, 0, 0, 0);
+  const weekStart = new Date(cursor);
+  weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
+  const endDate = new Date(weekStart);
+  endDate.setDate(endDate.getDate() + weeks * 7 - 1);
+
+  while (cursor <= endDate) {
+    if (selectedDays.includes(cursor.getDay())) dates.push(new Date(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return dates;
 }
 
 function parsePromptRelation(prompt: string) {
@@ -311,13 +343,14 @@ function hasPlanningAnchorOnDate(activityQuery: string, date: Date, anchors: Pla
   });
 }
 
-function getRecurrence(prompt: string): 'weekday' | 'weekend' | null {
+function getRecurrence(prompt: string): Recurrence {
   if (/every\s+(?:week\s*day|weekday)s?/.test(prompt)) return 'weekday';
   if (/every\s+(?:weekend|weekends)/.test(prompt)) return 'weekend';
+  if (/\b(?:every\s+day|daily)\b/.test(prompt)) return 'daily';
   return null;
 }
 
-function getPlanDates(startDate: Date, count: number, recurrence: 'weekday' | 'weekend' | null, prompt: string) {
+function getPlanDates(startDate: Date, count: number, recurrence: Recurrence, prompt: string) {
   const specificDate = getSpecificPromptDate(startDate, prompt);
   if (specificDate) return [specificDate];
 
@@ -374,9 +407,17 @@ function getSpecificPromptDate(startDate: Date, prompt: string) {
   const dayMatch = normalizedPrompt.match(/\b(next|this|on)?\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
   if (dayMatch) {
     const targetDay = dayNames.indexOf(dayMatch[2]);
+    const requestedNextWeek = /\b(?:next|following|upcoming)\s+week\b/.test(normalizedPrompt);
+    const requestedThisWeek = /\bthis\s+week\b/.test(normalizedPrompt);
     const currentDay = startDate.getDay();
     let daysAhead = (targetDay - currentDay + 7) % 7;
-    if (dayMatch[1] === 'next' || (dayMatch[1] === undefined && daysAhead === 0)) daysAhead += 7;
+    if (requestedNextWeek) {
+      const currentWeekStartOffset = (currentDay + 6) % 7;
+      daysAhead = 7 - currentWeekStartOffset + targetDay - (targetDay === 0 ? 0 : 1);
+      if (targetDay === 0) daysAhead = 13 - currentWeekStartOffset;
+    } else if (dayMatch[1] === 'next' || (!requestedThisWeek && dayMatch[1] === undefined && daysAhead === 0)) {
+      daysAhead += 7;
+    }
     const date = new Date(startDate);
     date.setHours(12, 0, 0, 0);
     date.setDate(date.getDate() + daysAhead);
@@ -396,14 +437,14 @@ function getSpecificPromptDate(startDate: Date, prompt: string) {
   return null;
 }
 
-function createMatchingDates(startDate: Date, endDate: Date, recurrence: 'weekday' | 'weekend') {
+function createMatchingDates(startDate: Date, endDate: Date, recurrence: Recurrence) {
   const dates: Date[] = [];
   const cursor = new Date(startDate);
   cursor.setHours(12, 0, 0, 0);
   while (cursor <= endDate) {
     const day = cursor.getDay();
     const isWeekday = day >= 1 && day <= 5;
-    if ((recurrence === 'weekday' && isWeekday) || (recurrence === 'weekend' && !isWeekday)) {
+    if (recurrence === 'daily' || (recurrence === 'weekday' && isWeekday) || (recurrence === 'weekend' && !isWeekday)) {
       dates.push(new Date(cursor));
     }
     cursor.setDate(cursor.getDate() + 1);
@@ -421,25 +462,58 @@ function createSequentialDates(startDate: Date, count: number) {
 }
 
 function getPromptTitle(prompt: string) {
-  const requestedActivity = prompt.split(/\b(?:after|before)\b/)[0];
-  if (/workout|training|exercise|gym/.test(requestedActivity)) return 'Workout session';
-  if (/study|learn|course|exam/.test(requestedActivity)) return 'Study session';
-  if (/read|reading|book/.test(requestedActivity)) return 'Reading session';
-  if (/write|writing|essay/.test(requestedActivity)) return 'Writing session';
-  if (/school|class|lecture|lesson/.test(requestedActivity)) return 'School';
-  if (/meeting|call|appointment/.test(requestedActivity)) return 'Scheduled commitment';
-  return 'Focus session';
+  const requestedActivity = extractRequestedActivity(prompt);
+  if (/^(?:workout|training|exercise|gym)$/.test(requestedActivity)) return 'Workout session';
+  if (/^(?:study|learning|course|exam)$/.test(requestedActivity)) return 'Study session';
+  if (/^(?:read|reading|book)$/.test(requestedActivity)) return 'Reading session';
+  if (/^(?:write|writing|essay)$/.test(requestedActivity)) return 'Writing session';
+  if (/^school$/.test(requestedActivity)) return 'School';
+  if (/^(?:meeting|call|appointment)$/.test(requestedActivity)) return 'Scheduled commitment';
+  return requestedActivity ? toTitleCase(requestedActivity) : 'Focus session';
+}
+
+function findLearnedActivity(prompt: string, context?: PlanningContext) {
+  if (!context) return null;
+  const requestedActivity = prompt.split(/\b(?:after|before)\b/)[0].trim();
+  return context.activities.find((activity) => activity.aliases.some((alias) => (
+    requestedActivity.includes(alias.toLowerCase()) || alias.toLowerCase().includes(requestedActivity)
+  )));
+}
+
+function toTitleCase(value: string) {
+  return value.replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function getPromptActivityKey(prompt: string) {
-  const requestedActivity = prompt.split(/\b(?:after|before)\b/)[0];
+  const requestedActivity = extractRequestedActivity(prompt);
   if (/workout|training|exercise|gym/.test(requestedActivity)) return 'workout';
-  if (/school|class|lecture|lesson/.test(requestedActivity)) return 'school';
+  if (/\bschool\b/.test(requestedActivity)) return 'school';
   if (/study|learn|course|exam/.test(requestedActivity)) return 'study';
   if (/read|reading|book/.test(requestedActivity)) return 'reading';
   if (/write|writing|essay/.test(requestedActivity)) return 'writing';
   if (/meeting|call|appointment/.test(requestedActivity)) return 'commitment';
   return 'focus';
+}
+
+function extractRequestedActivity(prompt: string) {
+  let activity = prompt.toLowerCase().replace(/[’]/g, '\'').split(/\b(?:after|before)\b/)[0].trim();
+  activity = activity
+    .replace(/^(?:im|i'm|i am|ive got|i've got|i have|i need to|i want to|i should|please|can you|could you|schedule|plan|add|put|book|arrange|remind me to)\s+/g, '')
+    .replace(/^(?:go\s+to|do|attend|take|set up)\s+/g, '')
+    .replace(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/g, ' ')
+    .replace(/\b\d+\s*(?:minutes?|mins?|hours?|hrs?)\b/g, ' ')
+    .replace(/\b(?:today|tomorrow|tonight)\b/g, ' ')
+    .replace(/\b(?:morning|afternoon|evening|night)\s*$/g, ' ')
+    .replace(/\b(?:this|next|following|upcoming)\s+(?:week|weekday|weekend|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/g, ' ')
+    .replace(/\b(?:on|for)\s*$/g, ' ')
+    .replace(/\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/g, ' ')
+    .replace(/\b(?:every|each)\b.*$/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^(?:a|an|the)\s+/g, '')
+    .trim()
+    .replace(/\s+(?:at|by|around|on|for|in)$/g, '')
+    .trim();
+  return activity || 'focus session';
 }
 
 export function formatPlannerTime(minutes: number) {

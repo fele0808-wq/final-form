@@ -1,6 +1,6 @@
 # Final Form Development Log
 
-Last reviewed: 2026-09-10
+Last reviewed: 2026-09-17
 
 ## Product Summary
 
@@ -18,6 +18,7 @@ The current AI behavior is local and rule-based. It does not call an external AI
 - Duplicate prompts open a confirmation popup listing the affected dates.
 - The user can keep the existing plan or intentionally add another copy.
 - Plan IDs include a generated batch identifier to prevent duplicate React keys when plans are added repeatedly.
+- Smoke suites were run directly against the planner: an initial 106-prompt suite produced 100 valid plans and 6 correctly returned no plan because their `after`/`before` anchor activity was not present. A broader 500-prompt activity suite then passed all 500 naming and plan-generation checks.
 
 ## Natural-Language Time Logic
 
@@ -34,6 +35,8 @@ When a time is ambiguous, the app opens an AM/PM clarification popup. The exact 
 
 When a prompt has no time, the app opens a start/end time popup. Start and end values are selected by pressing and dragging directly on the displayed time, like a combination lock. Dragging upward moves later; dragging downward moves earlier. Changes happen in 15-minute increments. Separate AM/PM controls remain available.
 
+The same popup includes a weekly recurrence toggle. When enabled, Monday through Sunday day chips can be selected, and a week-count stepper chooses 1 to 52 weeks. The selected days repeat for exactly that many weeks, so work or school can be limited to weekdays without adding weekend entries.
+
 ## Date and Recurrence Logic
 
 The planner distinguishes single-day requests from date ranges:
@@ -45,14 +48,20 @@ The planner distinguishes single-day requests from date ranges:
 - `next 7 days`.
 - `this weekend` and `next weekend`.
 - `every weekday` and `every weekend`.
+- `every day` and `daily`.
 - Combined ranges such as `this week and next week`.
+
+Recurring activities can also be configured from the missing-time popup. The user can enable weekly repetition, select any combination of Monday through Sunday, and choose from 1 to 52 weeks. The planner uses calendar-week boundaries, so a two-week Monday-Friday routine started on Thursday includes the remaining days this week and all selected days next week, without spilling into a third week.
 
 Weekday behavior:
 
 - `every weekday next week` creates Monday through Friday of the following week.
 - `every weekend next week` creates Saturday and Sunday of the following week.
 - `every weekday this week and next week` creates remaining weekdays in the current week and all weekdays in the following week.
+- `every day for the next 2 weeks` creates 14 daily entries.
 - Specific-day prompts create one item instead of expanding to a week.
+
+Specific weekday phrases take precedence over broader wording. For example, `cooking lesson on Thursday next week` creates one item on the following Thursday rather than creating a plan for today or a full week.
 
 ## Activity Relationships
 
@@ -76,15 +85,23 @@ Example:
 
 Plans are named from the requested activity portion of the prompt, not from a referenced anchor:
 
-- School, class, lecture, or lesson -> `School`.
+- Exact `school` wording -> `School`.
 - Gym, workout, training, or exercise -> `Workout session`.
 - Study, learning, course, or exam -> `Study session`.
 - Read or book -> `Reading session`.
 - Write, writing, or essay -> `Writing session`.
-- Meeting, call, or appointment -> `Scheduled commitment`.
+- A simple meeting, call, or appointment -> `Scheduled commitment`.
 - Other activities -> `Focus session`.
 
-Each generated plan also stores an activity category such as `school`, `workout`, `study`, `reading`, `writing`, `commitment`, or `focus`. Categories are used for reliable deduplication and cancellation.
+Natural-language filler is removed from activity names. For example, `I've got work every day for the next 2 weeks` becomes `Work`, while `piano practice every day` becomes `Piano Practice`.
+
+Each generated plan also stores an activity category such as `school`, `workout`, `study`, `reading`, `writing`, `commitment`, or `focus`. Categories are used for reliable deduplication and cancellation. Generic activities keep their own extracted names, for example `Work`, `Supermarket`, `Practice Guitar`, `Volunteer At Animal Shelter`, and `Cooking Lesson`.
+
+Activity extraction is phrase-first rather than category-first. The parser removes conversational filler, dates, times, recurrence terms, and trailing date prepositions while preserving the meaningful activity phrase. Known simple categories still receive friendly labels such as `School`, `Workout session`, and `Study session`, but a phrase such as `cooking lesson` is not incorrectly relabeled as `School`.
+
+The 500-prompt suite covered errands, shopping, chores, pets, cooking, hobbies, creative work, education, work, appointments, health, exercise, routines, family, social activities, travel, repairs, finances, arbitrary dates, times, recurrence, and varied first-person/request phrasing.
+
+A slang-focused suite also covers casual social prompts such as `hang out with my mate tomorrow`, `catch up with my mates on Saturday`, `have a yarn with my mate on Sunday`, `grab food with the lads tomorrow`, and `go out with the crew Friday`. Conversational slang is preserved as the activity name while date and time filler is removed.
 
 ## Conflict Handling
 
@@ -158,19 +175,27 @@ The assistant reports the number of removed entries and the number of distinct a
 - Updates when calendar activities are deleted.
 - Uses sorted activity times to produce chronological free blocks.
 
-## Local Preference Learning
+## Local Knowledge Base and Preference Learning
 
-Planning preferences are stored locally with AsyncStorage under the versioned key `final-form-planning-preferences-v1`.
+Planning knowledge is stored locally with AsyncStorage under the versioned key `final-form-planning-preferences-v1`. The store now contains activity records and a bounded fact list in addition to the original preference maps.
 
 The app remembers:
 
 - Typical duration by activity.
 - Preferred start time by activity.
 - Accepted earlier/later movement choices.
+- User wording aliases, such as `lift` for `Workout session`.
+- Readable labels for arbitrary activities, such as `Piano Practice`.
+- Schedule facts derived from successful prompts.
+- Confidence and update timestamps for learned activity records.
 
 Learned preferences apply only when a new prompt does not specify its own timing, duration, or relationship. Explicit user instructions always take priority.
 
+Before generating a plan, the app retrieves relevant local activities and facts from the prompt. This allows a later prompt to reuse learned wording and defaults without requiring the user to repeat the full activity description.
+
 Storage is device/browser-local. There is no account sync or external training service.
+
+The current planner smoke suite covered 106 differently worded activities across work, school, hobbies, errands, appointments, lessons, routines, recurring schedules, dates, times, and relationships. The only no-plan results were relationship prompts without an existing anchor, such as `gym session after school` when no school plan had been supplied. This is intentional: the planner does not invent a missing anchor schedule.
 
 ## Popup and Gesture System
 
@@ -223,6 +248,7 @@ The repository currently has no ESLint configuration. Running `npm.cmd run lint`
 
 - The planner is deterministic rule-based logic, not a remote or generative AI model.
 - Schedule state currently lives in the planning screen during the session.
-- Learned preferences persist locally, but plans themselves are not yet persisted as a full calendar database.
+- Learned preferences and activity knowledge persist locally, but plans themselves are not yet persisted as a full calendar database.
+- The knowledge base is currently per-device and single-user; it does not merge or share information between different users.
 - Existing calendar activities are represented by the current screen's activity state; future persistent calendar integration would require a storage or calendar provider layer.
 - Native speech recognition depends on platform permissions and the installed Expo speech module.
