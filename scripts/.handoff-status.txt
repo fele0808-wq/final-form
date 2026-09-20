@@ -1,3 +1,7 @@
-﻿HANDOFF STATUS: OK
-Every tracked change is logged in HANDOFF.md.
-Status updated: 2026-09-20 17:49:00
+﻿HANDOFF STATUS: STALE
+Changed but NOT yet covered by a HANDOFF.md entry:
+
+2026-09-20 17:52:45 | Changed | C:\Users\Laser\Documents\Default Project\.expo\types\router.d.ts
+
+Status updated: 2026-09-20 17:52:51
+ACTION: append a HANDOFF.md entry (newest first) covering these files.
