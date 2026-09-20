@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>PENDING</title>
+</head>
+<body>
+<pre id="out">PENDING</pre>
+<script src="planning-tests.js"></script>
+<script>
+  try {
+    runTests().then(function (out) {
+      document.getElementById('out').textContent = 'DONE\n' + JSON.stringify(out);
+      document.title = 'DONE';
+    }).catch(function (e) {
+      document.getElementById('out').textContent = 'THREW: ' + (e && e.stack ? e.stack : e);
+      document.title = 'THREW';
+    });
+  } catch (e) {
+    document.getElementById('out').textContent = 'THREW-SYNC: ' + (e && e.stack ? e.stack : e);
+    document.title = 'THREW';
+  }
+</script>
+</body>
+</html>

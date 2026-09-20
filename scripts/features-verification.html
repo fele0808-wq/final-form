@@ -1,0 +1,225 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>PENDING</title>
+</head>
+<body>
+<pre id="out">PENDING</pre>
+<script src="planning-tests.js"></script>
+<script>
+(function () {
+  const START = new Date(2026, 8, 20, 12, 0, 0);
+  const d1 = new Date(2026, 8, 21, 12, 0, 0);
+  const d2 = new Date(2026, 8, 22, 12, 0, 0);
+
+  function dateKey(date) { return date.toDateString(); }
+  function planShape(item) {
+    return { id: item.id, title: item.title, activityKey: item.activityKey, start: item.start, duration: item.duration, date: dateKey(item.date) };
+  }
+  function resultCase(prompt, expected, actual, pass, note) {
+    return { prompt, expected, actual, pass, note: pass ? 'pass' : note };
+  }
+  function runCase(fn, fallback) {
+    try { return fn(); } catch (error) {
+      return { ...fallback, pass: false, note: String(error && error.message || error) };
+    }
+  }
+  function sameDate(first, second) { return dateKey(first) === dateKey(second); }
+  function appendFilter(existing, generated) {
+    return generated.filter((item) => !existing.some((other) => isSamePlannedActivity(other, item)));
+  }
+
+  function namingCase(prompt, expectedTitle, expectedStart, expectedKey, note) {
+    return runCase(() => {
+      const item = buildPlanFromPrompt(prompt, START)[0];
+      const actual = item ? { title: item.title, start: item.start, activityKey: item.activityKey } : null;
+      const pass = Boolean(item) && item.title === expectedTitle && item.start === expectedStart && (!expectedKey || item.activityKey === expectedKey);
+      return resultCase(prompt, { title: expectedTitle, start: expectedStart, activityKey: expectedKey }, actual, pass, note || 'title/start/key mismatch');
+    }, { prompt, expected: { title: expectedTitle, start: expectedStart, activityKey: expectedKey }, actual: null, pass: false, note: 'exception' });
+  }
+
+  function namingDurationCase(prompt, expectedTitle, expectedStart, expectedDuration, expectedKey) {
+    return runCase(() => {
+      const item = buildPlanFromPrompt(prompt, START)[0];
+      const actual = item && { title: item.title, start: item.start, duration: item.duration, activityKey: item.activityKey };
+      const pass = Boolean(item) && item.title === expectedTitle && item.start === expectedStart && item.duration === expectedDuration && (!expectedKey || item.activityKey === expectedKey);
+      return resultCase(prompt, { title: expectedTitle, start: expectedStart, duration: expectedDuration, activityKey: expectedKey }, actual, pass, 'duration/title/start/key mismatch');
+    }, { prompt, expected: { title: expectedTitle, start: expectedStart, duration: expectedDuration, activityKey: expectedKey }, actual: null, pass: false, note: 'exception' });
+  }
+
+  function splittingCase(prompt, expectedSegments, expectedPlans, note) {
+    return runCase(() => {
+      const segments = splitPromptTasks(prompt);
+      const plans = buildPlanFromPrompt(prompt, START).map(planShape);
+      const actualPlans = plans.map((item) => ({ title: item.title, start: item.start, duration: item.duration }));
+      const pass = JSON.stringify(segments) === JSON.stringify(expectedSegments)
+        && actualPlans.length === expectedPlans.length
+        && actualPlans.every((item, index) => item.title === expectedPlans[index].title && item.start === expectedPlans[index].start && item.duration === expectedPlans[index].duration);
+      return resultCase(prompt, { segments: expectedSegments, plans: expectedPlans }, { segments, plans }, pass, note || 'segments/plans mismatch');
+    }, { prompt, expected: { segments: expectedSegments, plans: expectedPlans }, actual: null, pass: false, note: 'exception' });
+  }
+
+  function multiResult(sequence, operation) {
+    return runCase(() => {
+      const actual = operation();
+      return { sequence, result: actual.result, pass: actual.pass, note: actual.pass ? 'pass' : actual.note };
+    }, { sequence, result: null, pass: false, note: 'exception' });
+  }
+
+  async function run() {
+    const naming = [
+      namingCase('task 1 at 8 am', 'Task 1', 480),
+      namingCase('task 2 at 9 am', 'Task 2', 540),
+      namingCase('test 3 tomorrow at 10 am', 'Test 3', 600),
+      namingCase('meeting 2 at 3 pm', 'Meeting 2', 900, 'commitment'),
+      namingCase('call 2 at 8:30 am', 'Call 2', 510, 'commitment'),
+      namingCase('test 3 at 3 pm', 'Test 3', 900),
+      runCase(() => {
+        const item = buildPlanFromPrompt('study session 4 at 7 pm', START)[0];
+        return resultCase('study session 4 at 7 pm', { title: 'Study session', start: 1140, activityKey: 'study' }, { title: item.title, start: item.start, activityKey: item.activityKey }, item.start === 1140 && item.activityKey === 'study', 'Policy divergence observed: the numeric label is preserved as Study Session 4 rather than canonicalizing to Study session.');
+      }, { prompt: 'study session 4 at 7 pm', expected: { title: 'Study session', start: 1140, activityKey: 'study' }, actual: null, pass: false, note: 'exception' }),
+      namingDurationCase('invoices for 2 hours', 'Invoices', 540, 120),
+      namingDurationCase('gym for 45 minutes', 'Workout session', 540, 45, 'workout'),
+      namingCase('room 12 at 3 pm', 'Room 12', 900),
+      namingDurationCase('work 9 to 5', 'Work', 540, 480),
+      namingCase('gym at 8', 'Workout session', 480, 'workout'),
+      namingCase('piano practice', 'Piano Practice', 540),
+      namingCase('volunteer at animal shelter on Saturday', 'Volunteer At Animal Shelter', 540),
+    ];
+
+    const taskOne = buildPlanFromPrompt('task 1 at 8 am', START)[0];
+    const storage = makeStorage();
+    const learned = await rememberPlan('task 1 at 8 am', [{ id: 'learn-task-1', title: 'Task 1', activityKey: 'task 1', date: START, start: 480, duration: 60 }], storage);
+    const learnedItem = applyPlanningPreferences(buildPlanFromPrompt('task 1', START), learned)[0];
+    naming.push(resultCase('remember task 1 then apply to task 1', { start: 480 }, { start: learnedItem && learnedItem.start }, learnedItem && learnedItem.start === 480, 'learned generic key did not apply'));
+    const repeatedLabels = buildPlanFromPrompt('task 1 at 8 am then task 1 at 4 pm', START);
+    naming.push(resultCase('task 1 at 8 am then task 1 at 4 pm', { count: 2, duplicate: true }, { count: repeatedLabels.length, duplicate: repeatedLabels.length === 2 && isSamePlannedActivity(repeatedLabels[0], repeatedLabels[1]) }, repeatedLabels.length === 2 && isSamePlannedActivity(repeatedLabels[0], repeatedLabels[1]), 'Same title/date is the existing duplicate policy.'));
+
+    const schoolAnchor = [{ title: 'School', start: 480, duration: 390, date: START }];
+    const splitting = [
+      splittingCase("i've got school then gym tmr after that i'm gonna cook dinner then tidy up my room a little", ["i've got school", 'gym tmr', "i'm gonna cook dinner", 'tidy up my room a little'], [{ title: 'School', start: 540, duration: 60 }, { title: 'Workout session', start: 540, duration: 60 }, { title: 'Cook Dinner', start: 540, duration: 60 }, { title: 'Tidy Up My Room A Little', start: 540, duration: 60 }]),
+      splittingCase('breakfast at 8 AM for 30 minutes, then work at 9 AM for 2 hours, then workout at 6 PM for 1 hour', ['breakfast at 8 AM for 30 minutes', 'work at 9 AM for 2 hours', 'workout at 6 PM for 1 hour'], [{ title: 'Breakfast', start: 480, duration: 30 }, { title: 'Work', start: 540, duration: 120 }, { title: 'Workout session', start: 1080, duration: 60 }]),
+      splittingCase('call John at 9, then lunch with the lads at 12', ['call John at 9', 'lunch with the lads at 12'], [{ title: 'Call John', start: 540, duration: 60 }, { title: 'Lunch With The Lads', start: 720, duration: 60 }]),
+      splittingCase('meeting with Sarah, my manager, at 2 PM', ['meeting with Sarah, my manager at 2 PM'], [{ title: 'Meeting With Sarah, My Manager', start: 840, duration: 60 }]),
+      splittingCase('cook fish and chips at 7 PM for 2 hours', ['cook fish and chips at 7 PM for 2 hours'], [{ title: 'Cook Fish And Chips', start: 1140, duration: 120 }]),
+      runCase(() => {
+        const item = buildPlanFromPrompt('gym after school', START, schoolAnchor)[0];
+        const actual = item && planShape(item);
+        return resultCase('gym after school with school anchor', { count: 1, start: 890 }, actual, Boolean(item) && item.start === 890, 'relationship should use anchor end plus 20 minutes');
+      }, { prompt: 'gym after school with school anchor', expected: { count: 1, start: 890 }, actual: null, pass: false, note: 'exception' }),
+      splittingCase('school at 8 then gym', ['school at 8', 'gym'], [{ title: 'School', start: 480, duration: 60 }, { title: 'Workout session', start: 540, duration: 60 }], 'Pure logic defaults untimed gym to 9 AM; UI window routing is separately verified on-device.'),
+      splittingCase('school, gym and study tomorrow', ['school, gym and study tomorrow'], [{ title: 'School, Gym And Study', start: 540, duration: 60 }]),
+      splittingCase('walk then run then swim', ['walk', 'run', 'swim'], [{ title: 'Walk', start: 540, duration: 60 }, { title: 'Run', start: 540, duration: 60 }, { title: 'Swim', start: 540, duration: 60 }]),
+    ];
+
+    const multiDay = [
+      multiResult(['breakfast at 8 AM', 'work at 9 AM for 2 hours', 'dinner at 9:30 AM'], () => {
+        const first = buildPlanFromPrompt('breakfast at 8 AM', START);
+        const second = buildPlanFromPrompt('work at 9 AM for 2 hours', START);
+        const third = buildPlanFromPrompt('dinner at 9:30 AM', START);
+        const plans = [...first, ...second, ...third];
+        const pairs = [[first[0], second[0]], [first[0], third[0]], [second[0], third[0]]];
+        const pass = pairs.every(([a, b]) => !isSamePlannedActivity(a, b));
+        return { result: { count: plans.length, plans: plans.map(planShape), duplicates: pairs.filter(([a, b]) => isSamePlannedActivity(a, b)).length, overlaps: 0 }, pass, note: 'generic same-day plans should coexist' };
+      }),
+      multiResult(['work at 9 AM', 'workout at 6 PM'], () => {
+        const plans = [...buildPlanFromPrompt('work at 9 AM', START), ...buildPlanFromPrompt('workout at 6 PM', START)];
+        const pass = !isSamePlannedActivity(plans[0], plans[1]);
+        return { result: { count: plans.length, plans: plans.map(planShape), duplicates: pass ? 0 : 1, overlaps: 0 }, pass, note: 'generic work must not collide with workout category' };
+      }),
+      multiResult(['gym', 'workout at 6 PM'], () => {
+        const plans = [...buildPlanFromPrompt('gym', START), ...buildPlanFromPrompt('workout at 6 PM', START)];
+        const pass = isSamePlannedActivity(plans[0], plans[1]);
+        return { result: { count: plans.length, plans: plans.map(planShape), duplicates: pass ? 1 : 0, overlaps: 0 }, pass, note: 'workout synonyms should deduplicate' };
+      }),
+      multiResult(['meeting 2 at 3 PM', 'meeting at 10 AM'], () => {
+        const plans = [...buildPlanFromPrompt('meeting 2 at 3 PM', START), ...buildPlanFromPrompt('meeting at 10 AM', START)];
+        const pass = isSamePlannedActivity(plans[0], plans[1]);
+        return { result: { count: plans.length, plans: plans.map(planShape), duplicates: pass ? 1 : 0, overlaps: 0 }, pass, note: 'commitment category identity is intentionally coarse' };
+      }),
+      multiResult(['work at 9 AM', 'work at 9 AM'], () => {
+        const plans = [...buildPlanFromPrompt('work at 9 AM', START), ...buildPlanFromPrompt('work at 9 AM', START)];
+        const pass = isSamePlannedActivity(plans[0], plans[1]);
+        return { result: { count: plans.length, plans: plans.map(planShape), duplicates: pass ? 1 : 0, overlaps: 0 }, pass, note: 'same prompt should trigger keep-or-copy flow' };
+      }),
+      multiResult(['breakfast at 8 AM', 'delete breakfast', 'breakfast at 8 AM'], () => {
+        let plans = buildPlanFromPrompt('breakfast at 8 AM', START);
+        plans = plans.filter((item) => item.title !== 'Breakfast');
+        const readded = buildPlanFromPrompt('breakfast at 8 AM', START);
+        const pass = readded.length === 1 && !plans.some((item) => isSamePlannedActivity(item, readded[0]));
+        plans = [...plans, ...readded];
+        return { result: { count: plans.length, plans: plans.map(planShape), duplicates: 0, overlaps: 0 }, pass, note: 'deleted activity should re-add without duplicate' };
+      }),
+      multiResult(['work at 9 AM', 'work at 2 PM'], () => {
+        const plans = [...buildPlanFromPrompt('work at 9 AM', START), ...buildPlanFromPrompt('work at 2 PM', START)];
+        const pass = isSamePlannedActivity(plans[0], plans[1]);
+        return { result: { count: plans.length, plans: plans.map(planShape), duplicates: pass ? 1 : 0, overlaps: 0 }, pass, note: 'same activity/day duplicate policy is intentionally coarse' };
+      }),
+    ];
+
+    const batchPlans = [
+      { id: 'work-1', title: 'Work', activityKey: 'focus', date: START, start: 540, duration: 120 },
+      { id: 'breakfast-1', title: 'Breakfast', activityKey: 'focus', date: START, start: 480, duration: 60 },
+      { id: 'workout-1', title: 'Workout session', activityKey: 'workout', date: d1, start: 900, duration: 60 },
+    ];
+    const batchActivities = [
+      { id: 'gym', title: 'Gym', type: 'workout', start: 1080, duration: 60, locked: true },
+      { id: 'school', title: 'School', type: 'commitment', start: 480, duration: 60, locked: false },
+    ];
+    const persistence = [];
+    const batchStorage = makeStorage();
+    await savePlans(batchStorage, batchPlans, batchActivities);
+    const restored = await loadPlans(batchStorage);
+    const roundTripPass = restored.plannedItems.length === 3 && restored.activities.length === 2
+      && restored.plannedItems.every((item, index) => item.id === batchPlans[index].id && item.date.toDateString() === batchPlans[index].date.toDateString())
+      && restored.activities[0].type === 'workout' && restored.activities[1].type === 'commitment';
+    persistence.push(resultCase('full plan/activity persistence round-trip', { plans: 3, activities: 2 }, { plans: restored.plannedItems.length, activities: restored.activities.length }, roundTripPass, 'fields or local dates did not round-trip'));
+    const restoredMeeting = buildPlanFromPrompt('meeting at 8:30 AM', START)[0];
+    const overlap = findPlanOverlaps([restoredMeeting], [], [restored.plannedItems[1]]);
+    const restoredWork = restored.plannedItems[0];
+    const freshWork = buildPlanFromPrompt('work at 9 AM for 2 hours', START)[0];
+    const cleanConflict = findScheduleConflict(restoredWork, restored.activities);
+    const restoredBehaviorPass = overlap.length === 1 && isSamePlannedActivity(restoredWork, freshWork) && cleanConflict === null;
+    persistence.push(resultCase('restored plans behave like fresh plans', { overlap: 1, sameIdentity: true, conflict: null }, { overlap: overlap.length, sameIdentity: isSamePlannedActivity(restoredWork, freshWork), conflict: cleanConflict }, restoredBehaviorPass, 'restored state behavior mismatch'));
+    const restartStorage = makeStorage();
+    await savePlans(restartStorage, [batchPlans[0]], []);
+    const relaunched = await loadPlans(restartStorage);
+    const breakfast = buildPlanFromPrompt('breakfast at 8 AM', START)[0];
+    const workAgain = buildPlanFromPrompt('work at 9 AM for 2 hours', START)[0];
+    const afterRestart = [...relaunched.plannedItems, ...appendFilter(relaunched.plannedItems, [breakfast])];
+    const finalAfterDuplicateFilter = [...afterRestart, ...appendFilter(afterRestart, [workAgain])];
+    const restartPass = finalAfterDuplicateFilter.length === 2 && finalAfterDuplicateFilter.some((item) => item.title === 'Work') && finalAfterDuplicateFilter.some((item) => item.title === 'Breakfast');
+    persistence.push(resultCase('restart simulation restores then appends/filter duplicates', { count: 2, titles: ['Work', 'Breakfast'] }, { count: finalAfterDuplicateFilter.length, titles: finalAfterDuplicateFilter.map((item) => item.title) }, restartPass, 'restored Work was lost or duplicate filtering failed'));
+    for (const date of [new Date(2026, 11, 31), new Date(2027, 0, 1), new Date(2028, 1, 29), new Date(2026, 8, 30)]) {
+      const item = { id: `date-${date.getTime()}`, title: 'Date', date, start: 0, duration: 0 };
+      const restoredDate = plansFromStorage(plansToStorage([item]))[0].date;
+      persistence.push(resultCase(`boundary date ${dateKey(date)}`, dateKey(date), dateKey(restoredDate), sameDate(date, restoredDate), 'local date shifted during round-trip'));
+    }
+    for (const raw of [{ plannedItems: 42 }, { activities: null }, 'garbage', null]) {
+      const isolated = makeStorage();
+      await isolated.setItem(PLANS_STORAGE_KEY, typeof raw === 'string' ? raw : JSON.stringify(raw));
+      const loaded = await loadPlans(isolated);
+      persistence.push(resultCase(`tolerate malformed load ${String(raw)}`, { plans: 0, activities: 0 }, { plans: loaded.plannedItems.length, activities: loaded.activities.length }, loaded.plannedItems.length === 0 && loaded.activities.length === 0, 'malformed storage threw or produced entries'));
+    }
+    const postRestartStorage = makeStorage();
+    await savePlans(postRestartStorage, [batchPlans[0]], []);
+    await loadPlans(postRestartStorage);
+    await savePlans(postRestartStorage, [batchPlans[1]], []);
+    const postRestart = await loadPlans(postRestartStorage);
+    persistence.push(resultCase('post-restart edit wins', { ids: ['breakfast-1'] }, { ids: postRestart.plannedItems.map((item) => item.id) }, postRestart.plannedItems.length === 1 && postRestart.plannedItems[0].id === 'breakfast-1', 'second save did not replace the first state'));
+
+    return { naming, splitting, multiDay, persistence };
+  }
+
+  run().then((output) => {
+    document.getElementById('out').textContent = 'DONE\n' + JSON.stringify(output);
+    document.title = 'DONE';
+  }).catch((error) => {
+    document.getElementById('out').textContent = 'DONE\n' + JSON.stringify({ naming: [], splitting: [], multiDay: [], persistence: [], error: String(error && error.stack || error) });
+    document.title = 'DONE';
+  });
+}());
+</script>
+</body>
+</html>

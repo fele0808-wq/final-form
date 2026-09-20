@@ -1,0 +1,137 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>PENDING</title>
+</head>
+<body>
+<pre id="out">PENDING</pre>
+<script src="planning-tests.js"></script>
+<script>
+(function () {
+  const START = new Date(2026, 8, 20, 12, 0, 0);
+  const tomorrow = new Date(START);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+
+  function planDate(item) {
+    return item.date.toDateString();
+  }
+
+  function makeNaming(prompt, expected, expectedStart) {
+    try {
+      const item = buildPlanFromPrompt(prompt, START)[0];
+      const actual = item ? item.title : '(no plan)';
+      const pass = actual === expected && (expectedStart === undefined || item.start === expectedStart);
+      return { prompt, expected, actual, pass, note: pass ? 'pass' : `Expected title/time; got ${actual} @ ${item ? item.start : 'n/a'}.` };
+    } catch (error) {
+      return { prompt, expected, actual: '(exception)', pass: false, note: String(error && error.message || error) };
+    }
+  }
+
+  function makeSplit(prompt, expectedSegments, expectedStarts, expectedDurations, anchors) {
+    try {
+      const segments = splitPromptTasks(prompt);
+      const plans = buildPlanFromPrompt(prompt, START, anchors || []).map((item) => ({
+        title: item.title,
+        start: item.start,
+        duration: item.duration,
+        date: planDate(item),
+      }));
+      const pass = JSON.stringify(segments) === JSON.stringify(expectedSegments)
+        && plans.length === expectedStarts.length
+        && JSON.stringify(plans.map((item) => item.start)) === JSON.stringify(expectedStarts)
+        && (expectedDurations === undefined || JSON.stringify(plans.map((item) => item.duration)) === JSON.stringify(expectedDurations));
+      return { prompt, segments, plans, pass, note: pass ? 'pass' : `Expected segments/starts ${JSON.stringify(expectedSegments)} / ${JSON.stringify(expectedStarts)}.` };
+    } catch (error) {
+      return { prompt, segments: [], plans: [], pass: false, note: String(error && error.message || error) };
+    }
+  }
+
+  function identity(item) {
+    return `${getPlanIdentity(item.title, item.activityKey)}|${planDate(item)}`;
+  }
+
+  function appendPlan(accumulated, prompt, startDate = START, anchors = []) {
+    const generated = buildPlanFromPrompt(prompt, startDate, anchors);
+    const duplicates = generated.filter((item) => accumulated.some((existing) => identity(existing) === identity(item)));
+    const overlaps = findPlanOverlaps(generated, [], accumulated);
+    return { generated, duplicates, overlaps };
+  }
+
+  function multiDayCase(name, sequence, check) {
+    try {
+      let accumulated = [];
+      const steps = [];
+      for (const prompt of sequence) {
+        const result = appendPlan(accumulated, prompt);
+        steps.push(result);
+        accumulated = accumulated.concat(result.generated);
+      }
+      const finalPlans = accumulated.map((item) => ({ title: item.title, start: item.start, duration: item.duration, date: planDate(item), id: item.id }));
+      const result = {
+        count: accumulated.length,
+        plans: finalPlans,
+        duplicates: steps.reduce((sum, step) => sum + step.duplicates.length, 0),
+        overlaps: steps.reduce((sum, step) => sum + step.overlaps.length, 0),
+      };
+      const pass = check(result, steps);
+      return { sequence, result, pass, note: pass ? 'pass' : 'See result against expected append/duplicate/overlap behavior.' };
+    } catch (error) {
+      return { sequence, result: { count: 0, plans: [], duplicates: 0, overlaps: 0 }, pass: false, note: String(error && error.message || error) };
+    }
+  }
+
+  function runDiagnostic() {
+    const naming = [
+      ['school', 'School'], ['gym', 'Workout session'], ['workout', 'Workout session'], ['training', 'Workout session'], ['exercise', 'Workout session'],
+      ['study', 'Study session'], ['course', 'Study session'], ['exam', 'Study session'], ['read', 'Reading session'], ['book', 'Reading session'],
+      ['writing', 'Writing session'], ['meeting', 'Scheduled commitment'], ['call', 'Scheduled commitment'], ['appointment', 'Scheduled commitment'],
+      ['work at 9 am for 2 hours', 'Work', 540], ['piano practice', 'Piano Practice'], ['cooking lesson at 8:30 AM to 10 AM', 'Cooking Lesson', 510],
+      ['volunteer at animal shelter on Saturday', 'Volunteer At Animal Shelter'], ['supermarket at 5 PM to 6 PM', 'Supermarket', 1020], ['yoga at 4 PM for 1 hour', 'Yoga', 960],
+      ['gym from 8:00 AM to 9:00 AM', 'Workout session', 480], ['dinner from 7:00 PM to 8:00 PM', 'Dinner', 1140], ['study from 5:00 PM to 6:30 PM', 'Study session', 1020],
+      ['task 1 at 8 AM', 'Task 1', 480], ['task 2 at 9 AM', 'Task 2', 540], ['meeting 2 at 3 PM', 'Meeting 2', 900], ['test 3 tomorrow at 10 AM', 'Test 3', 600],
+      ['hang out with my mate tomorrow', 'Hang Out With My Mate'], ['tidy up my room a little tomorrow', 'Tidy Up My Room A Little'],
+      ['walk the dog tomorrow', 'Walk The Dog'], ['have a yarn with my mate on Sunday', 'Have A Yarn With My Mate'],
+    ].map(([prompt, expected, expectedStart]) => makeNaming(prompt, expected, expectedStart));
+
+    const schoolAnchor = [{ title: 'School', start: 480, duration: 390, date: START }];
+    const splitting = [
+      makeSplit("i've got school then gym tmr after that i'm gonna cook dinner then tidy up my room a little", ["i've got school", 'gym tmr', "i'm gonna cook dinner", 'tidy up my room a little'], [540, 540, 540, 540]),
+      makeSplit('breakfast at 8 AM for 30 minutes, then work at 9 AM for 2 hours, then workout at 6 PM for 1 hour', ['breakfast at 8 AM for 30 minutes', 'work at 9 AM for 2 hours', 'workout at 6 PM for 1 hour'], [480, 540, 1080], [30, 120, 60]),
+      makeSplit('call John at 9, then lunch with the lads at 12', ['call John at 9', 'lunch with the lads at 12'], [540, 720]),
+      makeSplit('meeting with Sarah, my manager, at 2 PM', ['meeting with Sarah, my manager at 2 PM'], [840]),
+      makeSplit('cook fish and chips at 7 PM for 2 hours', ['cook fish and chips at 7 PM for 2 hours'], [1140], [120]),
+      makeSplit('gym after school', ['gym after school'], [], undefined, schoolAnchor),
+      makeSplit('school at 8 then gym', ['school at 8', 'gym'], [480, 540]),
+      makeSplit('school, gym and study tomorrow', ['school, gym and study tomorrow'], [540]),
+      makeSplit('walk then run then swim', ['walk', 'run', 'swim'], [540, 540, 540]),
+    ];
+    splitting[5].plans = buildPlanFromPrompt('gym after school', START, schoolAnchor).map((item) => ({ title: item.title, start: item.start, duration: item.duration, date: planDate(item) }));
+    splitting[5].pass = splitting[5].segments.length === 1 && splitting[5].plans.length === 1 && splitting[5].plans[0].start === 890;
+    splitting[5].note = splitting[5].pass ? 'pass; relationship start is school end 870 + 20.' : 'Expected relationship start 890.';
+
+    const multiDay = [
+      multiDayCase('three same-day prompts append in order', ['breakfast at 8 AM', 'work at 9 AM for 2 hours', 'workout at 6 PM'], (result) => result.count === 3 && result.duplicates === 0 && result.overlaps === 0 && new Set(result.plans.map((item) => item.id)).size === 3 && result.plans.every((item) => item.date === START.toDateString())),
+      multiDayCase('duplicate guard and keep-both simulation', ['work at 9 AM for 2 hours', 'work at 9 AM for 2 hours'], (result, steps) => steps[1].duplicates.length === 1 && result.count === 2),
+      multiDayCase('overlap after existing work plan', ['work at 9 AM to 11 AM', 'meeting at 8:30 AM'], (result) => result.overlaps === 1),
+      multiDayCase('two untimed tasks completed through windows', ['gym from 8:00 AM to 9:00 AM', 'dinner from 7:00 PM to 8:00 PM'], (result) => result.count === 2 && result.plans.map((item) => item.start).join(',') === '480,1140'),
+      multiDayCase('mixed timed and window-completed tasks', ['school at 8 AM', 'gym from 6:00 PM to 7:00 PM'], (result) => result.count === 2 && result.plans.map((item) => item.start).join(',') === '480,1080'),
+      multiDayCase('cross-day safety', ['breakfast at 8 AM', 'lunch tomorrow at 12 PM'], (result) => result.count === 2 && result.plans[0].date === START.toDateString() && result.plans[1].date === tomorrow.toDateString()),
+      multiDayCase('same activity different times same day', ['work at 9 AM', 'work at 2 PM'], (result) => result.count === 2 && result.plans.map((item) => item.start).join(',') === '540,840'),
+    ];
+
+    return { naming, splitting, multiDay };
+  }
+
+  try {
+    const output = runDiagnostic();
+    document.getElementById('out').textContent = 'DONE\n' + JSON.stringify(output);
+    document.title = 'DONE';
+  } catch (error) {
+    document.getElementById('out').textContent = 'DONE\n' + JSON.stringify({ naming: [], splitting: [], multiDay: [], error: String(error && error.stack || error) });
+    document.title = 'DONE';
+  }
+}());
+</script>
+</body>
+</html>
